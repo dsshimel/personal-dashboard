@@ -39,6 +39,7 @@ function App() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [activeTab, setActiveTab] = useState<ActiveTab>('terminal')
   const [loadingSessions, setLoadingSessions] = useState(false)
+  const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const outputRef = useRef<HTMLDivElement>(null)
   const logsOutputRef = useRef<HTMLDivElement>(null)
@@ -288,7 +289,18 @@ function App() {
       const response = await fetch(apiUrl, { method: 'POST' })
       if (response.ok) {
         setStatus('restarting')
-        addMessage('status', 'Server is restarting, please wait...')
+        // Countdown and refresh
+        setRestartCountdown(3)
+        const countdownInterval = setInterval(() => {
+          setRestartCountdown(prev => {
+            if (prev === null || prev <= 1) {
+              clearInterval(countdownInterval)
+              window.location.reload()
+              return null
+            }
+            return prev - 1
+          })
+        }, 1000)
       } else {
         addMessage('error', 'Failed to restart server')
       }
@@ -344,7 +356,11 @@ function App() {
           onClick={handleRestart}
           disabled={status === 'restarting'}
         >
-          {status === 'restarting' ? 'Restarting...' : 'Restart Server'}
+          {restartCountdown !== null
+            ? `Refreshing in ${restartCountdown}...`
+            : status === 'restarting'
+              ? 'Restarting...'
+              : 'Restart Server'}
         </button>
         <div className="sessions-list">
           {loadingSessions ? (
