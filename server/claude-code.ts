@@ -47,6 +47,12 @@ export class ClaudeCodeManager extends EventEmitter {
     console.log('[ClaudeCode] Current sessionId:', this.sessionId);
     console.log('[ClaudeCode] isProcessing:', this.isProcessing);
 
+    // Handle slash commands
+    if (message.startsWith('/')) {
+      this.handleSlashCommand(message);
+      return;
+    }
+
     if (this.isProcessing) {
       console.log('[ClaudeCode] Already processing, rejecting command');
       this.emit('output', { type: 'error', content: 'Already processing a command' });
@@ -239,5 +245,56 @@ export class ClaudeCodeManager extends EventEmitter {
   reset(): void {
     this.abort();
     this.sessionId = null;
+  }
+
+  private handleSlashCommand(command: string): void {
+    const cmd = command.toLowerCase().trim();
+    console.log('[ClaudeCode] Handling slash command:', cmd);
+
+    switch (cmd) {
+      case '/help':
+        this.emit('output', {
+          type: 'output',
+          content: `Available commands:
+/help - Show this help message
+/clear - Clear the terminal (handled by UI)
+/session - Show current session ID
+/reset - Reset the session
+
+Note: Most slash commands from the Claude CLI interactive mode are not available in this web interface.`
+        });
+        break;
+
+      case '/session':
+        if (this.sessionId) {
+          this.emit('output', { type: 'output', content: `Current session: ${this.sessionId}` });
+        } else {
+          this.emit('output', { type: 'output', content: 'No active session. Send a message to start one.' });
+        }
+        break;
+
+      case '/clear':
+        this.emit('output', { type: 'status', content: 'clear' });
+        break;
+
+      case '/reset':
+        this.reset();
+        this.emit('output', { type: 'output', content: 'Session reset. Send a message to start a new conversation.' });
+        break;
+
+      case '/usage':
+      case '/cost':
+        this.emit('output', {
+          type: 'output',
+          content: 'Usage/cost tracking is not available in this web interface. Check the Claude Code CLI directly for usage stats.'
+        });
+        break;
+
+      default:
+        this.emit('output', {
+          type: 'error',
+          content: `Unknown command: ${command}\nType /help for available commands.`
+        });
+    }
   }
 }
