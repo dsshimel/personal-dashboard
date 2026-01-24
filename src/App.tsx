@@ -359,6 +359,7 @@ function App() {
                 onClick={() => handleSelectSession(session)}
               >
                 <div className="session-name">{session.name}</div>
+                <div className="session-uuid">({session.id})</div>
                 <div className="session-meta">{formatDate(session.lastModified)}</div>
               </button>
             ))
