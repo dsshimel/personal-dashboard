@@ -40,6 +40,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('terminal')
   const [loadingSessions, setLoadingSessions] = useState(false)
   const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
+  const isRestartingRef = useRef(false)
   const wsRef = useRef<WebSocket | null>(null)
   const outputRef = useRef<HTMLDivElement>(null)
   const logsOutputRef = useRef<HTMLDivElement>(null)
@@ -137,6 +138,8 @@ function App() {
             } else if (data.content === 'restarting') {
               setStatus('restarting')
               addMessage('status', 'Server is restarting...')
+            } else if (data.content === 'clear') {
+              setMessages([])
             }
             break
           case 'complete':
@@ -157,8 +160,15 @@ function App() {
 
     ws.onclose = (event) => {
       console.log('[WS] Closed:', event.code, event.reason)
-      setStatus('disconnected')
       wsRef.current = null
+
+      // Don't auto-reconnect if we're restarting - the page will reload
+      if (isRestartingRef.current) {
+        console.log('[WS] Skipping auto-reconnect during restart')
+        return
+      }
+
+      setStatus('disconnected')
       addMessage('status', `Disconnected (code: ${event.code}). Reconnecting in 3s...`)
 
       // Auto-reconnect after 3 seconds
@@ -338,6 +348,7 @@ function App() {
       const response = await fetch(apiUrl, { method: 'POST' })
       if (response.ok) {
         setStatus('restarting')
+        isRestartingRef.current = true
         // Countdown and refresh
         setRestartCountdown(3)
         // Save current session ID to restore after reload
