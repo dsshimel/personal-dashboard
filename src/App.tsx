@@ -82,7 +82,40 @@ function App() {
     ws.onopen = () => {
       console.log('[WS] Connected')
       setStatus('connected')
-      addMessage('status', 'Connected to Claude Code server')
+
+      // Check if we need to restore a session after restart
+      const restartSessionId = localStorage.getItem('restartSessionId')
+      if (restartSessionId) {
+        localStorage.removeItem('restartSessionId')
+        ws.send(JSON.stringify({ type: 'resume', sessionId: restartSessionId }))
+        setSessionId(restartSessionId)
+
+        // Fetch and restore conversation history
+        fetch(`http://${window.location.hostname}:3001/sessions/${restartSessionId}/history`)
+          .then(res => res.json())
+          .then((history: Array<{ type: 'input' | 'output' | 'error' | 'status'; content: string; timestamp: string }>) => {
+            const restoredMessages: Message[] = history.map(msg => ({
+              id: generateId(),
+              type: msg.type,
+              content: msg.content,
+              timestamp: new Date(msg.timestamp),
+            }))
+            // Add status message to the end of restored messages
+            restoredMessages.push({
+              id: generateId(),
+              type: 'status',
+              content: `Restored session with ${history.length} messages`,
+              timestamp: new Date(),
+            })
+            setMessages(restoredMessages)
+          })
+          .catch(err => {
+            console.error('Failed to fetch session history:', err)
+            addMessage('status', `Restored session: ${restartSessionId}`)
+          })
+      } else {
+        addMessage('status', 'Connected to Claude Code server')
+      }
     }
 
     ws.onmessage = (event) => {
@@ -263,13 +296,29 @@ function App() {
     setSidebarOpen(false)
   }
 
-  const handleSelectSession = (session: Session) => {
+  const handleSelectSession = async (session: Session) => {
     // Reset current session and set new session ID
     wsRef.current?.send(JSON.stringify({ type: 'resume', sessionId: session.id }))
     setSessionId(session.id)
     setMessages([])
-    addMessage('status', `Resumed session: ${session.name}`)
     setSidebarOpen(false)
+
+    // Fetch and restore conversation history
+    try {
+      const res = await fetch(`http://${window.location.hostname}:3001/sessions/${session.id}/history`)
+      const history: Array<{ type: 'input' | 'output' | 'error' | 'status'; content: string; timestamp: string }> = await res.json()
+      const restoredMessages: Message[] = history.map(msg => ({
+        id: generateId(),
+        type: msg.type,
+        content: msg.content,
+        timestamp: new Date(msg.timestamp),
+      }))
+      setMessages(restoredMessages)
+      addMessage('status', `Loaded ${history.length} messages from session`)
+    } catch (err) {
+      console.error('Failed to fetch session history:', err)
+      addMessage('status', `Resumed session: ${session.name}`)
+    }
   }
 
   const getStatusColor = () => {
@@ -291,6 +340,10 @@ function App() {
         setStatus('restarting')
         // Countdown and refresh
         setRestartCountdown(3)
+        // Save current session ID to restore after reload
+        if (sessionId) {
+          localStorage.setItem('restartSessionId', sessionId)
+        }
         const countdownInterval = setInterval(() => {
           setRestartCountdown(prev => {
             if (prev === null || prev <= 1) {

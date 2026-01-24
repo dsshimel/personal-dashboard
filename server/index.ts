@@ -89,6 +89,88 @@ app.post('/restart', async (_req, res) => {
   console.log('Restart signal sent to watcher');
 });
 
+// Get conversation history for a session
+app.get('/sessions/:sessionId/history', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const claudeDir = join(homedir(), '.claude', 'projects');
+    const projectDirs = await readdir(claudeDir, { withFileTypes: true });
+
+    // Find the session file
+    let sessionFile: string | null = null;
+    for (const projectDir of projectDirs) {
+      if (!projectDir.isDirectory()) continue;
+      const filePath = join(claudeDir, projectDir.name, `${sessionId}.jsonl`);
+      try {
+        await Bun.file(filePath).stat();
+        sessionFile = filePath;
+        break;
+      } catch {
+        // File doesn't exist in this project dir
+      }
+    }
+
+    if (!sessionFile) {
+      res.status(404).json({ error: 'Session not found' });
+      return;
+    }
+
+    const content = await readFile(sessionFile, 'utf-8');
+    const lines = content.split('\n').filter(line => line.trim());
+
+    const messages: Array<{
+      type: 'input' | 'output' | 'error' | 'status';
+      content: string;
+      timestamp: string;
+    }> = [];
+
+    for (const line of lines) {
+      try {
+        const parsed = JSON.parse(line);
+
+        if (parsed.type === 'user' && parsed.message) {
+          let text = '';
+          if (typeof parsed.message.content === 'string') {
+            text = parsed.message.content;
+          } else if (Array.isArray(parsed.message.content)) {
+            const textBlock = parsed.message.content.find(
+              (c: {type: string; text?: string}) => c.type === 'text' && c.text
+            );
+            text = textBlock?.text || '';
+          }
+          if (text) {
+            messages.push({
+              type: 'input',
+              content: text,
+              timestamp: parsed.timestamp || new Date().toISOString(),
+            });
+          }
+        } else if (parsed.type === 'assistant' && parsed.message) {
+          // Extract text from assistant message content
+          if (Array.isArray(parsed.message.content)) {
+            for (const block of parsed.message.content) {
+              if (block.type === 'text' && block.text) {
+                messages.push({
+                  type: 'output',
+                  content: block.text,
+                  timestamp: parsed.timestamp || new Date().toISOString(),
+                });
+              }
+            }
+          }
+        }
+      } catch {
+        // Skip invalid JSON lines
+      }
+    }
+
+    res.json(messages);
+  } catch (error) {
+    console.error('Error fetching session history:', error);
+    res.status(500).json({ error: 'Failed to fetch session history' });
+  }
+});
+
 // List available sessions
 app.get('/sessions', async (_req, res) => {
   try {
