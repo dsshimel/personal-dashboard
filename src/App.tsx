@@ -26,7 +26,7 @@ interface Session {
   project: string
 }
 
-type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing'
+type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 type ActiveTab = 'terminal' | 'logs'
 
 function App() {
@@ -100,6 +100,9 @@ function App() {
               setStatus('processing')
             } else if (data.content === 'connected') {
               setStatus('connected')
+            } else if (data.content === 'restarting') {
+              setStatus('restarting')
+              addMessage('status', 'Server is restarting...')
             }
             break
           case 'complete':
@@ -273,7 +276,25 @@ function App() {
       case 'connected': return '#4ade80'
       case 'connecting': return '#facc15'
       case 'processing': return '#60a5fa'
+      case 'restarting': return '#c084fc'
       case 'disconnected': return '#f87171'
+    }
+  }
+
+  const handleRestart = async () => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:3001/restart`
+      addMessage('status', 'Requesting server restart...')
+      const response = await fetch(apiUrl, { method: 'POST' })
+      if (response.ok) {
+        setStatus('restarting')
+        addMessage('status', 'Server is restarting, please wait...')
+      } else {
+        addMessage('error', 'Failed to restart server')
+      }
+    } catch (error) {
+      console.error('Failed to restart server:', error)
+      addMessage('error', 'Failed to restart server')
     }
   }
 
@@ -317,6 +338,13 @@ function App() {
         </div>
         <button className="new-chat-button" onClick={handleNewChat}>
           + New Chat
+        </button>
+        <button
+          className="restart-button"
+          onClick={handleRestart}
+          disabled={status === 'restarting'}
+        >
+          {status === 'restarting' ? 'Restarting...' : 'Restart Server'}
         </button>
         <div className="sessions-list">
           {loadingSessions ? (

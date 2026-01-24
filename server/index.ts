@@ -2,7 +2,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { ClaudeCodeManager } from './claude-code.js';
-import { readdir, readFile } from 'fs/promises';
+import { readdir, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -65,6 +65,28 @@ app.use((_req, res, next) => {
 // Health check endpoint
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', connections: managers.size });
+});
+
+// Restart the server (signals the watcher process to restart)
+app.post('/restart', async (_req, res) => {
+  console.log('Restart requested - signaling watcher process...');
+
+  // Notify all WebSocket clients that we're restarting
+  const restartMessage = JSON.stringify({ type: 'status', content: 'restarting' });
+  for (const client of allClients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(restartMessage);
+    }
+  }
+
+  // Respond to the HTTP request
+  res.json({ status: 'restarting' });
+
+  // Create the signal file that the watcher process is monitoring
+  const signalFile = join(WORKING_DIR, '.restart-signal');
+  await writeFile(signalFile, new Date().toISOString());
+
+  console.log('Restart signal sent to watcher');
 });
 
 // List available sessions
