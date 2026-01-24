@@ -12,6 +12,13 @@ interface Message {
   timestamp: Date
 }
 
+interface LogMessage {
+  id: string
+  level: 'info' | 'warn' | 'error'
+  content: string
+  timestamp: Date
+}
+
 interface Session {
   id: string
   name: string
@@ -20,17 +27,21 @@ interface Session {
 }
 
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing'
+type ActiveTab = 'terminal' | 'logs'
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([])
+  const [logMessages, setLogMessages] = useState<LogMessage[]>([])
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<ConnectionStatus>('disconnected')
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
+  const [activeTab, setActiveTab] = useState<ActiveTab>('terminal')
   const [loadingSessions, setLoadingSessions] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const outputRef = useRef<HTMLDivElement>(null)
+  const logsOutputRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
 
@@ -42,6 +53,16 @@ function App() {
       timestamp: new Date(),
     }
     setMessages(prev => [...prev, message])
+  }, [])
+
+  const addLogMessage = useCallback((level: LogMessage['level'], content: string, timestamp: string) => {
+    const logMessage: LogMessage = {
+      id: generateId(),
+      level,
+      content,
+      timestamp: new Date(timestamp),
+    }
+    setLogMessages(prev => [...prev, logMessage])
   }, [])
 
   const connect = useCallback(() => {
@@ -88,6 +109,9 @@ function App() {
             setSessionId(data.content)
             addMessage('status', `Session: ${data.content}`)
             break
+          case 'log':
+            addLogMessage(data.level, data.content, data.timestamp)
+            break
         }
       } catch {
         addMessage('output', event.data)
@@ -110,7 +134,7 @@ function App() {
       console.error('[WS] Error:', event)
       addMessage('error', `WebSocket error connecting to ${wsUrl}`)
     }
-  }, [addMessage])
+  }, [addMessage, addLogMessage])
 
   // Fetch sessions from API
   const fetchSessions = useCallback(async () => {
@@ -147,12 +171,19 @@ function App() {
     }
   }, [sidebarOpen, fetchSessions])
 
-  // Auto-scroll to bottom
+  // Auto-scroll to bottom for terminal messages
   useEffect(() => {
     if (outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight
     }
   }, [messages])
+
+  // Auto-scroll to bottom for log messages
+  useEffect(() => {
+    if (logsOutputRef.current) {
+      logsOutputRef.current.scrollTop = logsOutputRef.current.scrollHeight
+    }
+  }, [logMessages])
 
   // Focus input on load
   useEffect(() => {
@@ -261,6 +292,19 @@ function App() {
     return date.toLocaleDateString()
   }
 
+  const formatLogTime = (date: Date) => {
+    return date.toLocaleTimeString('en-US', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    })
+  }
+
+  const handleClearLogs = () => {
+    setLogMessages([])
+  }
+
   return (
     <div className="app-container">
       {/* Sidebar */}
@@ -307,59 +351,108 @@ function App() {
               <span></span>
             </button>
             <span className="terminal-dot" style={{ backgroundColor: getStatusColor() }} />
-            Claude Code Terminal
+            {activeTab === 'terminal' ? 'Claude Code Terminal' : 'Server Logs'}
           </div>
           <div className="terminal-controls">
-            {sessionId && <span className="session-id">Session: {sessionId.slice(0, 8)}...</span>}
-            <button onClick={handleReset} className="reset-button" title="Reset session">
-              Reset
-            </button>
+            {activeTab === 'terminal' && sessionId && <span className="session-id">Session: {sessionId.slice(0, 8)}...</span>}
+            {activeTab === 'terminal' ? (
+              <button onClick={handleReset} className="reset-button" title="Reset session">
+                Reset
+              </button>
+            ) : (
+              <button onClick={handleClearLogs} className="reset-button" title="Clear logs">
+                Clear
+              </button>
+            )}
           </div>
         </div>
 
-        <div className="terminal-output" ref={outputRef}>
-          {messages.length === 0 && (
-            <div className="welcome-message">
-              Welcome to Claude Code Terminal.
-              <br />
-              Type a message to start a conversation with Claude.
-            </div>
-          )}
-          {messages.map(msg => (
-            <div key={msg.id} className={`message message-${msg.type}`}>
-              {msg.type === 'input' && <span className="prompt">&gt; </span>}
-              {msg.type === 'error' && <span className="error-prefix">[ERROR] </span>}
-              {msg.type === 'status' && <span className="status-prefix">[STATUS] </span>}
-              <span className="message-content">{msg.content}</span>
-            </div>
-          ))}
-          {status === 'processing' && (
-            <div className="message message-status">
-              <span className="processing-indicator">...</span>
-            </div>
-          )}
-        </div>
-
-        <div className="terminal-input-container">
-          <span className="input-prompt">&gt;</span>
-          <input
-            ref={inputRef}
-            type="text"
-            className="terminal-input"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={status === 'connected' ? 'Type a message...' : `Status: ${status}...`}
-          />
+        {/* Tab bar */}
+        <div className="tab-bar">
           <button
-            className="send-button"
-            onClick={sendCommand}
-            disabled={!input.trim() || status === 'processing'}
-            aria-label="Send message"
+            className={`tab ${activeTab === 'terminal' ? 'active' : ''}`}
+            onClick={() => setActiveTab('terminal')}
           >
-            Send
+            Terminal
+          </button>
+          <button
+            className={`tab ${activeTab === 'logs' ? 'active' : ''}`}
+            onClick={() => setActiveTab('logs')}
+          >
+            Server Logs
+            {logMessages.length > 0 && <span className="tab-badge">{logMessages.length}</span>}
           </button>
         </div>
+
+        {/* Terminal output */}
+        {activeTab === 'terminal' && (
+          <div className="terminal-output" ref={outputRef}>
+            {messages.length === 0 && (
+              <div className="welcome-message">
+                Welcome to Claude Code Terminal.
+                <br />
+                Type a message to start a conversation with Claude.
+              </div>
+            )}
+            {messages.map(msg => (
+              <div key={msg.id} className={`message message-${msg.type}`}>
+                {msg.type === 'input' && <span className="prompt">&gt; </span>}
+                {msg.type === 'error' && <span className="error-prefix">[ERROR] </span>}
+                {msg.type === 'status' && <span className="status-prefix">[STATUS] </span>}
+                <span className="message-content">{msg.content}</span>
+              </div>
+            ))}
+            {status === 'processing' && (
+              <div className="message message-status">
+                <span className="processing-indicator">...</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Logs output */}
+        {activeTab === 'logs' && (
+          <div className="logs-output" ref={logsOutputRef}>
+            {logMessages.length === 0 && (
+              <div className="welcome-message">
+                No server logs yet.
+                <br />
+                Logs will appear here as the server processes requests.
+              </div>
+            )}
+            {logMessages.map(log => (
+              <div key={log.id} className={`log-message log-${log.level}`}>
+                <span className="log-timestamp">[{formatLogTime(log.timestamp)}]</span>
+                <span className={`log-level log-level-${log.level}`}>[{log.level.toUpperCase()}]</span>
+                <span className="log-content">{log.content}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Input container - only show on terminal tab */}
+        {activeTab === 'terminal' && (
+          <div className="terminal-input-container">
+            <span className="input-prompt">&gt;</span>
+            <input
+              ref={inputRef}
+              type="text"
+              className="terminal-input"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={status === 'connected' ? 'Type a message...' : `Status: ${status}...`}
+            />
+            <button
+              className="send-button"
+              onClick={sendCommand}
+              disabled={!input.trim() || status === 'processing'}
+              aria-label="Send message"
+            >
+              Send
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

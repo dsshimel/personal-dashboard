@@ -22,6 +22,7 @@ export class ClaudeCodeManager extends EventEmitter {
   private currentProcess: ReturnType<typeof Bun.spawn> | null = null;
   private workingDirectory: string;
   private isProcessing = false;
+  private wasAborted = false;
 
   constructor(workingDirectory?: string) {
     super();
@@ -53,6 +54,7 @@ export class ClaudeCodeManager extends EventEmitter {
     }
 
     this.isProcessing = true;
+    this.wasAborted = false;
     this.emit('output', { type: 'status', content: 'processing' });
 
     const args = this.buildArgs(message);
@@ -101,11 +103,14 @@ export class ClaudeCodeManager extends EventEmitter {
     console.log('[ClaudeCode] Process spawned, PID:', this.currentProcess.pid);
 
     // Close stdin immediately
-    this.currentProcess.stdin.end();
+    const stdin = this.currentProcess.stdin as { end: () => void };
+    stdin.end();
 
-    // Read stdout
-    const stdoutReader = this.currentProcess.stdout.getReader();
-    const stderrReader = this.currentProcess.stderr.getReader();
+    // Read stdout/stderr as ReadableStreams
+    const stdout = this.currentProcess.stdout as ReadableStream<Uint8Array>;
+    const stderr = this.currentProcess.stderr as ReadableStream<Uint8Array>;
+    const stdoutReader = stdout.getReader();
+    const stderrReader = stderr.getReader();
 
     // Process stdout
     const readStdout = async () => {
@@ -171,9 +176,11 @@ export class ClaudeCodeManager extends EventEmitter {
 
     this.currentProcess = null;
 
-    if (exitCode !== 0) {
+    // Don't throw error if process was intentionally aborted (exit code 143 = SIGTERM)
+    if (exitCode !== 0 && !this.wasAborted) {
       throw new Error(`Claude process exited with code ${exitCode}`);
     }
+    this.wasAborted = false;
   }
 
   private handleJsonLine(line: string): void {
@@ -221,6 +228,7 @@ export class ClaudeCodeManager extends EventEmitter {
 
   abort(): void {
     if (this.currentProcess) {
+      this.wasAborted = true;
       this.currentProcess.kill();
       this.currentProcess = null;
       this.isProcessing = false;

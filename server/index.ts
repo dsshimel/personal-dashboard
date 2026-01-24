@@ -16,6 +16,45 @@ const wss = new WebSocketServer({ server });
 // Store managers per connection
 const managers = new Map<WebSocket, ClaudeCodeManager>();
 
+// Store all connected WebSocket clients for log broadcasting
+const allClients = new Set<WebSocket>();
+
+// Broadcast log to all connected clients
+function broadcastLog(level: 'info' | 'warn' | 'error', message: string) {
+  const logMessage = JSON.stringify({
+    type: 'log',
+    level,
+    content: message,
+    timestamp: new Date().toISOString()
+  });
+
+  for (const client of allClients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(logMessage);
+    }
+  }
+}
+
+// Intercept console methods to broadcast logs
+const originalConsoleLog = console.log;
+const originalConsoleWarn = console.warn;
+const originalConsoleError = console.error;
+
+console.log = (...args: unknown[]) => {
+  originalConsoleLog(...args);
+  broadcastLog('info', args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' '));
+};
+
+console.warn = (...args: unknown[]) => {
+  originalConsoleWarn(...args);
+  broadcastLog('warn', args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' '));
+};
+
+console.error = (...args: unknown[]) => {
+  originalConsoleError(...args);
+  broadcastLog('error', args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' '));
+};
+
 // Enable CORS for the API endpoints
 app.use((_req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -129,6 +168,9 @@ app.get('/sessions', async (_req, res) => {
 wss.on('connection', (ws) => {
   console.log('Client connected');
 
+  // Add to all clients set for log broadcasting
+  allClients.add(ws);
+
   // Create a new manager for this connection
   const manager = new ClaudeCodeManager(WORKING_DIR);
   managers.set(ws, manager);
@@ -199,23 +241,19 @@ wss.on('connection', (ws) => {
     }
   });
 
-  // Clean up on disconnect
+  // Clean up on disconnect - don't abort running processes, let them complete
   ws.on('close', () => {
     console.log('Client disconnected');
-    const clientManager = managers.get(ws);
-    if (clientManager) {
-      clientManager.abort();
-      managers.delete(ws);
-    }
+    allClients.delete(ws);
+    // Don't abort the manager - let Claude process complete in background
+    // The session will be saved and can be resumed
+    managers.delete(ws);
   });
 
   ws.on('error', (error) => {
     console.error('WebSocket error:', error);
-    const clientManager = managers.get(ws);
-    if (clientManager) {
-      clientManager.abort();
-      managers.delete(ws);
-    }
+    allClients.delete(ws);
+    managers.delete(ws);
   });
 });
 
