@@ -701,9 +701,26 @@ function App() {
     }
   }, [])
 
+  /** Sets the resolution for a webcam stream. */
+  const setWebcamResolution = useCallback((deviceId: string, resolution: string) => {
+    if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
+      webcamWsRef.current.send(JSON.stringify({ type: 'webcam-resolution', deviceId, resolution }))
+    }
+  }, [])
+
   /** Toggles fullscreen mode for a webcam feed, with optional screen orientation lock. */
-  const toggleFullscreenWebcam = useCallback((deviceId: string | null) => {
+  const toggleFullscreenWebcam = useCallback((deviceId: string | null, previousDeviceId?: string | null) => {
     setFullscreenWebcam(deviceId)
+
+    // Change resolution based on fullscreen state
+    if (deviceId) {
+      // Entering fullscreen - request high resolution
+      setWebcamResolution(deviceId, '1920x1080')
+    } else if (previousDeviceId) {
+      // Exiting fullscreen - request normal resolution
+      setWebcamResolution(previousDeviceId, '640x480')
+    }
+
     // Try to lock screen orientation to landscape when entering fullscreen
     // Using type assertion because ScreenOrientation.lock() is not in all TS libs
     const orientation = screen.orientation as ScreenOrientation & {
@@ -717,13 +734,13 @@ function App() {
     } else if (!deviceId && orientation?.unlock) {
       orientation.unlock()
     }
-  }, [])
+  }, [setWebcamResolution])
 
   // Handle escape key to exit fullscreen
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && fullscreenWebcam) {
-        toggleFullscreenWebcam(null)
+        toggleFullscreenWebcam(null, fullscreenWebcam)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
@@ -1015,12 +1032,12 @@ function App() {
 
         {/* Fullscreen webcam overlay */}
         {fullscreenWebcam && webcamFrames.has(fullscreenWebcam) && (
-          <div className="webcam-fullscreen-overlay" onClick={() => toggleFullscreenWebcam(null)}>
+          <div className="webcam-fullscreen-overlay" onClick={() => toggleFullscreenWebcam(null, fullscreenWebcam)}>
             <div className="webcam-fullscreen-header">
               <span>{webcamDevices.find(d => d.id === fullscreenWebcam)?.name || fullscreenWebcam}</span>
               <button
                 className="webcam-exit-fullscreen-button"
-                onClick={(e) => { e.stopPropagation(); toggleFullscreenWebcam(null); }}
+                onClick={(e) => { e.stopPropagation(); toggleFullscreenWebcam(null, fullscreenWebcam); }}
               >
                 Exit Fullscreen
               </button>

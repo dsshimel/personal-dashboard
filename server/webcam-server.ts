@@ -68,13 +68,20 @@ wss.on('connection', (ws) => {
 
         case 'webcam-start':
           if (message.deviceId && typeof message.deviceId === 'string') {
-            await webcamManager.startStream(message.deviceId);
+            const resolution = message.resolution || '640x480';
+            await webcamManager.startStream(message.deviceId, resolution);
           }
           break;
 
         case 'webcam-stop':
           if (message.deviceId && typeof message.deviceId === 'string') {
             webcamManager.stopStream(message.deviceId);
+          }
+          break;
+
+        case 'webcam-resolution':
+          if (message.deviceId && typeof message.deviceId === 'string' && message.resolution) {
+            await webcamManager.setResolution(message.deviceId, message.resolution);
           }
           break;
 

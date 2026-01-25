@@ -23,6 +23,8 @@ interface FFmpegProcess {
   process: ReturnType<typeof Bun.spawn>;
   /** Device ID this process is streaming from. */
   deviceId: string;
+  /** Current resolution of the stream. */
+  resolution: string;
 }
 
 /**
@@ -115,16 +117,17 @@ export class WebcamManager extends EventEmitter {
    * Emits 'frame' events with base64-encoded JPEG data.
    *
    * @param deviceId - The device ID (name) to stream from.
+   * @param resolution - Resolution string (e.g., '640x480', '1920x1080'). Defaults to '640x480'.
    * @returns True if stream started successfully.
    */
-  async startStream(deviceId: string): Promise<boolean> {
+  async startStream(deviceId: string, resolution: string = '640x480'): Promise<boolean> {
     if (this.activeStreams.has(deviceId)) {
       console.log(`Stream already active for device: ${deviceId}`);
       return true;
     }
 
     try {
-      console.log(`Starting webcam stream for: ${deviceId}`);
+      console.log(`Starting webcam stream for: ${deviceId} at ${resolution}`);
 
       // FFmpeg command to capture from webcam and output MJPEG to stdout
       const args = [
@@ -133,7 +136,7 @@ export class WebcamManager extends EventEmitter {
         '-f', 'mjpeg',
         '-q:v', String(this.quality),
         '-r', String(this.frameRate),
-        '-s', '640x480', // Resolution
+        '-s', resolution,
         '-',
       ];
 
@@ -142,7 +145,7 @@ export class WebcamManager extends EventEmitter {
         stderr: 'pipe',
       });
 
-      this.activeStreams.set(deviceId, { process: proc, deviceId });
+      this.activeStreams.set(deviceId, { process: proc, deviceId, resolution });
 
       // Handle stderr for logging (FFmpeg outputs progress to stderr)
       this.handleStderr(deviceId, proc.stderr);
@@ -196,6 +199,41 @@ export class WebcamManager extends EventEmitter {
     for (const [deviceId] of this.activeStreams) {
       this.stopStream(deviceId);
     }
+  }
+
+  /**
+   * Changes the resolution of an active stream.
+   * Stops the current stream and restarts it with the new resolution.
+   *
+   * @param deviceId - The device ID to change resolution for.
+   * @param resolution - New resolution string (e.g., '1920x1080').
+   * @returns True if resolution change was initiated successfully.
+   */
+  async setResolution(deviceId: string, resolution: string): Promise<boolean> {
+    const stream = this.activeStreams.get(deviceId);
+    if (!stream) {
+      console.log(`No active stream for device: ${deviceId}`);
+      return false;
+    }
+
+    if (stream.resolution === resolution) {
+      console.log(`Stream already at ${resolution} for device: ${deviceId}`);
+      return true;
+    }
+
+    console.log(`Changing resolution for ${deviceId} from ${stream.resolution} to ${resolution}`);
+
+    // Stop current stream without emitting stop event (we'll emit started with new resolution)
+    try {
+      stream.process.kill();
+      this.activeStreams.delete(deviceId);
+    } catch (error) {
+      console.error(`Error stopping stream for resolution change: ${error}`);
+      return false;
+    }
+
+    // Start new stream with new resolution
+    return this.startStream(deviceId, resolution);
   }
 
   /**
