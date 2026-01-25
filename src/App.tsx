@@ -107,19 +107,45 @@ function App() {
       setStatus('connected')
 
       // Check for existing session: first from ref, then from localStorage
-      const currentSession = sessionIdRef.current || localStorage.getItem('currentSessionId')
+      // Also check restartSessionId for page reload after server restart
+      const restartSessionId = localStorage.getItem('restartSessionId')
+      const currentSession = sessionIdRef.current || localStorage.getItem('currentSessionId') || restartSessionId
       const lastId = lastMessageIdRef.current
+      const needsHistoryReload = !!restartSessionId || lastId === 0
+
+      // Clear restart session ID if present
+      if (restartSessionId) {
+        localStorage.removeItem('restartSessionId')
+      }
 
       if (currentSession) {
-        console.log(`[WS] Reconnecting to session ${currentSession}, last message ID: ${lastId}`)
+        console.log(`[WS] Reconnecting to session ${currentSession}, last message ID: ${lastId}, needsHistoryReload: ${needsHistoryReload}`)
 
         // Resume the session on the server
         ws.send(JSON.stringify({ type: 'resume', sessionId: currentSession }))
         setSessionId(currentSession)
         sessionIdRef.current = currentSession
+        localStorage.setItem('currentSessionId', currentSession)
 
-        // If we have a last message ID, fetch any missed messages
-        if (lastId > 0) {
+        // If page was reloaded or no message ID, fetch full conversation history
+        if (needsHistoryReload) {
+          try {
+            const res = await fetch(`http://${window.location.hostname}:3001/sessions/${currentSession}/history`)
+            const history: Array<{ type: 'input' | 'output' | 'error' | 'status'; content: string; timestamp: string }> = await res.json()
+            const restoredMessages: Message[] = history.map(msg => ({
+              id: generateId(),
+              type: msg.type,
+              content: msg.content,
+              timestamp: new Date(msg.timestamp),
+            }))
+            setMessages(restoredMessages)
+            addMessage('status', `Restored session with ${history.length} messages`)
+          } catch (err) {
+            console.error('Failed to fetch session history:', err)
+            addMessage('status', `Resumed session: ${currentSession.slice(0, 8)}...`)
+          }
+        } else {
+          // We have a last message ID, fetch any missed messages
           try {
             const res = await fetch(
               `http://${window.location.hostname}:3001/sessions/${currentSession}/messages?since=${lastId}`
@@ -152,8 +178,6 @@ function App() {
             console.error('Failed to fetch missed messages:', err)
             addMessage('status', 'Reconnected to Claude Code server')
           }
-        } else {
-          addMessage('status', `Resumed session: ${currentSession.slice(0, 8)}...`)
         }
       } else {
         addMessage('status', 'Connected to Claude Code server')
