@@ -852,3 +852,105 @@
     padding: 8px 14px;
   }
 }
+
+/* Webcam feed buttons container */
+.webcam-feed-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+/* Webcam fullscreen button */
+.webcam-fullscreen-button {
+  background: #3b82f6;
+  color: white;
+  border: none;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background-color 0.2s;
+}
+
+.webcam-fullscreen-button:hover {
+  background: #2563eb;
+}
+
+/* Make video container clickable */
+.webcam-video-container {
+  cursor: pointer;
+}
+
+/* Fullscreen overlay */
+.webcam-fullscreen-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: #000;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.webcam-fullscreen-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.7) 0%, transparent 100%);
+  color: white;
+  font-size: 16px;
+  z-index: 10000;
+}
+
+.webcam-exit-fullscreen-button {
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  padding: 10px 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background-color 0.2s;
+}
+
+.webcam-exit-fullscreen-button:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+.webcam-fullscreen-video {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+/* Mobile fullscreen - force landscape display */
+@media (max-width: 768px) {
+  .webcam-fullscreen-overlay {
+    /* On mobile, rotate to simulate landscape if in portrait */
+  }
+
+  .webcam-fullscreen-header {
+    padding: 12px 16px;
+    font-size: 14px;
+  }
+
+  .webcam-exit-fullscreen-button {
+    padding: 8px 16px;
+    font-size: 13px;
+  }
+
+  .webcam-fullscreen-button {
+    min-height: 36px;
+    padding: 8px 12px;
+  }
+}

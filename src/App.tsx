@@ -58,6 +58,7 @@ function App() {
   const [webcamFrames, setWebcamFrames] = useState<Map<string, string>>(new Map())
   const [loadingWebcams, setLoadingWebcams] = useState(false)
   const [webcamConnected, setWebcamConnected] = useState(false)
+  const [fullscreenWebcam, setFullscreenWebcam] = useState<string | null>(null)
   const isRestartingRef = useRef(false)
   const wsRef = useRef<WebSocket | null>(null)
   const webcamWsRef = useRef<WebSocket | null>(null)
@@ -567,6 +568,34 @@ function App() {
     }
   }, [])
 
+  const toggleFullscreenWebcam = useCallback((deviceId: string | null) => {
+    setFullscreenWebcam(deviceId)
+    // Try to lock screen orientation to landscape when entering fullscreen
+    // Using type assertion because ScreenOrientation.lock() is not in all TS libs
+    const orientation = screen.orientation as ScreenOrientation & {
+      lock?: (orientation: string) => Promise<void>
+      unlock?: () => void
+    }
+    if (deviceId && orientation?.lock) {
+      orientation.lock('landscape').catch(() => {
+        // Orientation lock not supported or denied - that's fine
+      })
+    } else if (!deviceId && orientation?.unlock) {
+      orientation.unlock()
+    }
+  }, [])
+
+  // Handle escape key to exit fullscreen
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && fullscreenWebcam) {
+        toggleFullscreenWebcam(null)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [fullscreenWebcam, toggleFullscreenWebcam])
+
   // Connect to webcam server and fetch list when webcams tab is activated
   useEffect(() => {
     if (activeTab === 'webcams') {
@@ -773,11 +802,20 @@ function App() {
                   <div key={deviceId} className="webcam-feed">
                     <div className="webcam-feed-header">
                       <span>{webcamDevices.find(d => d.id === deviceId)?.name || deviceId}</span>
-                      <button className="webcam-stop-button" onClick={() => stopWebcam(deviceId)}>
-                        Stop
-                      </button>
+                      <div className="webcam-feed-buttons">
+                        <button
+                          className="webcam-fullscreen-button"
+                          onClick={() => toggleFullscreenWebcam(deviceId)}
+                          title="Fullscreen"
+                        >
+                          Fullscreen
+                        </button>
+                        <button className="webcam-stop-button" onClick={() => stopWebcam(deviceId)}>
+                          Stop
+                        </button>
+                      </div>
                     </div>
-                    <div className="webcam-video-container">
+                    <div className="webcam-video-container" onClick={() => toggleFullscreenWebcam(deviceId)}>
                       {webcamFrames.has(deviceId) ? (
                         <img
                           src={`data:image/jpeg;base64,${webcamFrames.get(deviceId)}`}
@@ -793,6 +831,27 @@ function App() {
               </div>
             )}
         </div>
+
+        {/* Fullscreen webcam overlay */}
+        {fullscreenWebcam && webcamFrames.has(fullscreenWebcam) && (
+          <div className="webcam-fullscreen-overlay" onClick={() => toggleFullscreenWebcam(null)}>
+            <div className="webcam-fullscreen-header">
+              <span>{webcamDevices.find(d => d.id === fullscreenWebcam)?.name || fullscreenWebcam}</span>
+              <button
+                className="webcam-exit-fullscreen-button"
+                onClick={(e) => { e.stopPropagation(); toggleFullscreenWebcam(null); }}
+              >
+                Exit Fullscreen
+              </button>
+            </div>
+            <img
+              src={`data:image/jpeg;base64,${webcamFrames.get(fullscreenWebcam)}`}
+              alt={`Webcam feed: ${fullscreenWebcam}`}
+              className="webcam-fullscreen-video"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </div>
+        )}
 
         {/* Input container - only show on terminal tab */}
         {activeTab === 'terminal' && (
