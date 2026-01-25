@@ -56,8 +56,10 @@ function App() {
   const webcamWsRef = useRef<WebSocket | null>(null)
   const outputRef = useRef<HTMLDivElement>(null)
   const logsOutputRef = useRef<HTMLDivElement>(null)
+  const webcamsContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
+  const scrollPositionsRef = useRef<Record<ActiveTab, number>>({ terminal: 0, logs: 0, webcams: 0 })
 
   const addMessage = useCallback((type: Message['type'], content: string) => {
     const message: Message = {
@@ -478,6 +480,33 @@ function App() {
     setLogMessages([])
   }
 
+  const getScrollContainerForTab = useCallback((tab: ActiveTab) => {
+    switch (tab) {
+      case 'terminal': return outputRef.current
+      case 'logs': return logsOutputRef.current
+      case 'webcams': return webcamsContainerRef.current
+    }
+  }, [])
+
+  const handleTabChange = useCallback((newTab: ActiveTab) => {
+    // Save current tab's scroll position
+    const currentContainer = getScrollContainerForTab(activeTab)
+    if (currentContainer) {
+      scrollPositionsRef.current[activeTab] = currentContainer.scrollTop
+    }
+
+    // Switch to new tab
+    setActiveTab(newTab)
+
+    // Restore new tab's scroll position after render
+    requestAnimationFrame(() => {
+      const newContainer = getScrollContainerForTab(newTab)
+      if (newContainer) {
+        newContainer.scrollTop = scrollPositionsRef.current[newTab]
+      }
+    })
+  }, [activeTab, getScrollContainerForTab])
+
   const requestWebcamList = useCallback(() => {
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
       setLoadingWebcams(true)
@@ -589,20 +618,20 @@ function App() {
         <div className="tab-bar">
           <button
             className={`tab ${activeTab === 'terminal' ? 'active' : ''}`}
-            onClick={() => setActiveTab('terminal')}
+            onClick={() => handleTabChange('terminal')}
           >
             Terminal
           </button>
           <button
             className={`tab ${activeTab === 'logs' ? 'active' : ''}`}
-            onClick={() => setActiveTab('logs')}
+            onClick={() => handleTabChange('logs')}
           >
             Server Logs
             {logMessages.length > 0 && <span className="tab-badge">{logMessages.length}</span>}
           </button>
           <button
             className={`tab ${activeTab === 'webcams' ? 'active' : ''}`}
-            onClick={() => setActiveTab('webcams')}
+            onClick={() => handleTabChange('webcams')}
           >
             Webcams
             {activeWebcams.size > 0 && <span className="tab-badge">{activeWebcams.size}</span>}
@@ -657,7 +686,7 @@ function App() {
 
         {/* Webcams output */}
         {activeTab === 'webcams' && (
-          <div className="webcams-container">
+          <div className="webcams-container" ref={webcamsContainerRef}>
             <div className="webcams-header">
               <h3>Available Webcams</h3>
               <button

@@ -18,29 +18,24 @@ const isWindows = process.platform === 'win32';
 let appProcess: ReturnType<typeof spawn> | null = null;
 
 function killProcessesOnPorts() {
-  console.log('[Watcher] Killing processes on ports 3001 and 5173...');
+  const ports = [3001, 3002, 5173];
+  console.log(`[Watcher] Killing processes on ports ${ports.join(', ')}...`);
 
   if (isWindows) {
-    try {
-      // Kill process on port 3001
-      execSync('for /f "tokens=5" %a in (\'netstat -aon ^| findstr :3001 ^| findstr LISTENING\') do taskkill /F /PID %a', {
-        shell: 'cmd.exe',
-        stdio: 'ignore'
-      });
-    } catch { /* ignore */ }
-
-    try {
-      // Kill process on port 5173
-      execSync('for /f "tokens=5" %a in (\'netstat -aon ^| findstr :5173 ^| findstr LISTENING\') do taskkill /F /PID %a', {
-        shell: 'cmd.exe',
-        stdio: 'ignore'
-      });
-    } catch { /* ignore */ }
+    for (const port of ports) {
+      try {
+        execSync(`for /f "tokens=5" %a in ('netstat -aon ^| findstr :${port} ^| findstr LISTENING') do taskkill /F /PID %a`, {
+          shell: 'cmd.exe',
+          stdio: 'ignore'
+        });
+      } catch { /* ignore */ }
+    }
   } else {
-    try {
-      execSync('fuser -k 3001/tcp 2>/dev/null || true', { stdio: 'ignore' });
-      execSync('fuser -k 5173/tcp 2>/dev/null || true', { stdio: 'ignore' });
-    } catch { /* ignore */ }
+    for (const port of ports) {
+      try {
+        execSync(`fuser -k ${port}/tcp 2>/dev/null || true`, { stdio: 'ignore' });
+      } catch { /* ignore */ }
+    }
   }
 }
 
@@ -105,8 +100,13 @@ const watcher = watch(WORKING_DIR, (_eventType, filename) => {
   }
 });
 
-// Start the app initially
-startApp();
+// Kill any existing processes on our ports before starting
+killProcessesOnPorts();
+
+// Wait a moment for ports to be released, then start the app
+setTimeout(() => {
+  startApp();
+}, 1500);
 
 // Handle graceful shutdown
 process.on('SIGINT', () => {
