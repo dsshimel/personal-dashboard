@@ -106,77 +106,54 @@ function App() {
       console.log('[WS] Connected')
       setStatus('connected')
 
-      // Check if we need to restore a session after restart
-      const restartSessionId = localStorage.getItem('restartSessionId')
-      if (restartSessionId) {
-        localStorage.removeItem('restartSessionId')
-        ws.send(JSON.stringify({ type: 'resume', sessionId: restartSessionId }))
-        setSessionId(restartSessionId)
-        sessionIdRef.current = restartSessionId
+      // Check for existing session: first from ref, then from localStorage
+      const currentSession = sessionIdRef.current || localStorage.getItem('currentSessionId')
+      const lastId = lastMessageIdRef.current
 
-        // Fetch and restore conversation history
-        fetch(`http://${window.location.hostname}:3001/sessions/${restartSessionId}/history`)
-          .then(res => res.json())
-          .then((history: Array<{ type: 'input' | 'output' | 'error' | 'status'; content: string; timestamp: string }>) => {
-            const restoredMessages: Message[] = history.map(msg => ({
-              id: generateId(),
-              type: msg.type,
-              content: msg.content,
-              timestamp: new Date(msg.timestamp),
-            }))
-            // Add status message to the end of restored messages
-            restoredMessages.push({
-              id: generateId(),
-              type: 'status',
-              content: `Restored session with ${history.length} messages`,
-              timestamp: new Date(),
-            })
-            setMessages(restoredMessages)
-          })
-          .catch(err => {
-            console.error('Failed to fetch session history:', err)
-            addMessage('status', `Restored session: ${restartSessionId}`)
-          })
-      } else if (sessionIdRef.current && lastMessageIdRef.current > 0) {
-        // Reconnecting to an existing session - fetch any missed messages
-        const currentSession = sessionIdRef.current
-        const lastId = lastMessageIdRef.current
-        console.log(`[WS] Reconnecting, fetching messages since ID ${lastId} for session ${currentSession}`)
+      if (currentSession) {
+        console.log(`[WS] Reconnecting to session ${currentSession}, last message ID: ${lastId}`)
 
         // Resume the session on the server
         ws.send(JSON.stringify({ type: 'resume', sessionId: currentSession }))
+        setSessionId(currentSession)
+        sessionIdRef.current = currentSession
 
-        try {
-          const res = await fetch(
-            `http://${window.location.hostname}:3001/sessions/${currentSession}/messages?since=${lastId}`
-          )
-          const data: { messages: BufferedMessage[]; latestId: number } = await res.json()
+        // If we have a last message ID, fetch any missed messages
+        if (lastId > 0) {
+          try {
+            const res = await fetch(
+              `http://${window.location.hostname}:3001/sessions/${currentSession}/messages?since=${lastId}`
+            )
+            const data: { messages: BufferedMessage[]; latestId: number } = await res.json()
 
-          if (data.messages.length > 0) {
-            console.log(`[WS] Fetched ${data.messages.length} missed messages`)
-            // Add missed messages to the UI
-            data.messages.forEach(msg => {
-              if (msg.type === 'output' || msg.type === 'error') {
-                addMessage(msg.type, msg.content)
-              } else if (msg.type === 'status') {
-                if (msg.content === 'processing') {
-                  setStatus('processing')
-                } else if (msg.content === 'connected') {
+            if (data.messages.length > 0) {
+              console.log(`[WS] Fetched ${data.messages.length} missed messages`)
+              // Add missed messages to the UI
+              data.messages.forEach(msg => {
+                if (msg.type === 'output' || msg.type === 'error') {
+                  addMessage(msg.type, msg.content)
+                } else if (msg.type === 'status') {
+                  if (msg.content === 'processing') {
+                    setStatus('processing')
+                  } else if (msg.content === 'connected') {
+                    setStatus('connected')
+                  }
+                } else if (msg.type === 'complete') {
                   setStatus('connected')
                 }
-              } else if (msg.type === 'complete') {
-                setStatus('connected')
-              }
-            })
-            // Update the last message ID
-            lastMessageIdRef.current = data.latestId
-            addMessage('status', `Reconnected and fetched ${data.messages.length} missed message(s)`)
-          } else {
+              })
+              // Update the last message ID
+              lastMessageIdRef.current = data.latestId
+              addMessage('status', `Reconnected and fetched ${data.messages.length} missed message(s)`)
+            } else {
+              addMessage('status', 'Reconnected to Claude Code server')
+            }
+          } catch (err) {
+            console.error('Failed to fetch missed messages:', err)
             addMessage('status', 'Reconnected to Claude Code server')
           }
-        } catch (err) {
-          console.error('Failed to fetch missed messages:', err)
-          addMessage('status', 'Reconnected to Claude Code server')
+        } else {
+          addMessage('status', `Resumed session: ${currentSession.slice(0, 8)}...`)
         }
       } else {
         addMessage('status', 'Connected to Claude Code server')
@@ -217,6 +194,7 @@ function App() {
           case 'session':
             setSessionId(data.content)
             sessionIdRef.current = data.content
+            localStorage.setItem('currentSessionId', data.content)
             addMessage('status', `Session: ${data.content}`)
             break
           case 'log':
@@ -434,6 +412,7 @@ function App() {
     setSessionId(null)
     sessionIdRef.current = null
     lastMessageIdRef.current = 0
+    localStorage.removeItem('currentSessionId')
     setMessages([])
   }
 
@@ -448,6 +427,7 @@ function App() {
     setSessionId(session.id)
     sessionIdRef.current = session.id
     lastMessageIdRef.current = 0  // Reset message ID for new session
+    localStorage.setItem('currentSessionId', session.id)
     setMessages([])
     setSidebarOpen(false)
 
