@@ -18,7 +18,12 @@ export interface ClaudeMessage {
   session_id?: string;
   /** Message content with text blocks and tool use blocks. */
   message?: {
-    content?: Array<{ type: string; text?: string; name?: string }>;
+    content?: Array<{
+      type: string;
+      text?: string;
+      name?: string;
+      input?: Record<string, unknown>;
+    }>;
   };
   /** Direct content for error messages. */
   content?: string;
@@ -281,7 +286,8 @@ export class ClaudeCodeManager extends EventEmitter {
               if (block.type === 'text' && block.text) {
                 this.emit('output', { type: 'output', content: block.text });
               } else if (block.type === 'tool_use' && block.name) {
-                this.emit('output', { type: 'tool', content: block.name });
+                const toolDetail = this.formatToolDetail(block.name, block.input);
+                this.emit('output', { type: 'tool', content: toolDetail });
               }
             }
           }
@@ -304,6 +310,46 @@ export class ClaudeCodeManager extends EventEmitter {
       if (line.trim()) {
         this.emit('output', { type: 'output', content: line });
       }
+    }
+  }
+
+  /**
+   * Formats a human-readable description of a tool invocation.
+   */
+  private formatToolDetail(name: string, input?: Record<string, unknown>): string {
+    if (!input) return name;
+
+    switch (name) {
+      case 'Read':
+        return `Read: ${input.file_path || 'file'}`;
+      case 'Write':
+        return `Write: ${input.file_path || 'file'}`;
+      case 'Edit':
+        return `Edit: ${input.file_path || 'file'}`;
+      case 'Bash':
+        if (input.command) {
+          const cmd = String(input.command);
+          const short = cmd.length > 60 ? cmd.substring(0, 60) + '...' : cmd;
+          return `Bash: ${short}`;
+        }
+        return 'Bash';
+      case 'Glob':
+        return `Glob: ${input.pattern || 'pattern'}`;
+      case 'Grep':
+        return `Grep: ${input.pattern || 'pattern'}`;
+      case 'WebSearch':
+        return `WebSearch: ${input.query || 'query'}`;
+      case 'WebFetch':
+        return `WebFetch: ${input.url || 'url'}`;
+      case 'Task':
+        if (input.description) {
+          return `Task: ${input.description}`;
+        }
+        return 'Task';
+      case 'TodoWrite':
+        return 'TodoWrite';
+      default:
+        return name;
     }
   }
 

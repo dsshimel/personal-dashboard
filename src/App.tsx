@@ -834,7 +834,7 @@ function App() {
           {status === 'processing' && (
             <div className="message message-tool">
               <span className="tool-indicator">
-                {currentTool ? `Using ${currentTool}...` : 'Processing...'}
+                {currentTool || 'Processing...'}
               </span>
             </div>
           )}
