@@ -131,6 +131,7 @@ function App() {
   const changingResolutionRef = useRef<Set<string>>(new Set())
   const lastMessageIdRef = useRef<number>(0)
   const sessionIdRef = useRef<string | null>(null)
+  const fullscreenOverlayRef = useRef<HTMLDivElement>(null)
 
   /** Adds a new message to the terminal output. */
   const addMessage = useCallback((type: Message['type'], content: string) => {
@@ -734,7 +735,7 @@ function App() {
     }
   }, [])
 
-  /** Toggles fullscreen mode for a webcam feed, with optional screen orientation lock. */
+  /** Toggles fullscreen mode for a webcam feed, with browser fullscreen and orientation lock. */
   const toggleFullscreenWebcam = useCallback((deviceId: string | null, previousDeviceId?: string | null) => {
     setFullscreenWebcam(deviceId)
 
@@ -742,9 +743,25 @@ function App() {
     if (deviceId) {
       // Entering fullscreen - request high resolution and higher frame rate
       setWebcamResolution(deviceId, '1920x1080', 30)
+
+      // Request browser fullscreen after a short delay to ensure the overlay is rendered
+      setTimeout(() => {
+        if (fullscreenOverlayRef.current && document.fullscreenElement === null) {
+          fullscreenOverlayRef.current.requestFullscreen().catch(() => {
+            // Fullscreen not supported or denied - that's fine, we still have our overlay
+          })
+        }
+      }, 50)
     } else if (previousDeviceId) {
       // Exiting fullscreen - request normal resolution and frame rate
       setWebcamResolution(previousDeviceId, '640x480', 15)
+
+      // Exit browser fullscreen if active
+      if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {
+          // Ignore errors
+        })
+      }
     }
 
     // Try to lock screen orientation to landscape when entering fullscreen
@@ -762,15 +779,28 @@ function App() {
     }
   }, [setWebcamResolution])
 
-  // Handle escape key to exit fullscreen
+  // Handle escape key and browser fullscreen change to exit fullscreen
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && fullscreenWebcam) {
         toggleFullscreenWebcam(null, fullscreenWebcam)
       }
     }
+
+    // Sync our state when browser fullscreen changes (e.g., user pressed Escape in browser fullscreen)
+    const handleFullscreenChange = () => {
+      if (!document.fullscreenElement && fullscreenWebcam) {
+        // Browser exited fullscreen, sync our state
+        toggleFullscreenWebcam(null, fullscreenWebcam)
+      }
+    }
+
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      document.removeEventListener('fullscreenchange', handleFullscreenChange)
+    }
   }, [fullscreenWebcam, toggleFullscreenWebcam])
 
   // Connect to webcam server and fetch list when webcams tab is activated
@@ -1060,7 +1090,7 @@ function App() {
 
         {/* Fullscreen webcam overlay */}
         {fullscreenWebcam && (
-          <div className="webcam-fullscreen-overlay" onClick={() => toggleFullscreenWebcam(null, fullscreenWebcam)}>
+          <div ref={fullscreenOverlayRef} className="webcam-fullscreen-overlay" onClick={() => toggleFullscreenWebcam(null, fullscreenWebcam)}>
             <div className="webcam-fullscreen-header">
               <span>{webcamDevices.find(d => d.id === fullscreenWebcam)?.name || fullscreenWebcam}</span>
               <button
