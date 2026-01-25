@@ -8,6 +8,7 @@ import { homedir } from 'os';
 
 const PORT = process.env.PORT || 3001;
 const WORKING_DIR = process.env.WORKING_DIR || process.cwd();
+const MESSAGE_BUFFER_SIZE = 1000; // Keep last 1000 messages per session
 
 const app = express();
 const server = createServer(app);
@@ -18,6 +19,55 @@ const managers = new Map<WebSocket, ClaudeCodeManager>();
 
 // Store all connected WebSocket clients for log broadcasting
 const allClients = new Set<WebSocket>();
+
+// Message buffer for reconnection support
+interface BufferedMessage {
+  id: number;
+  type: string;
+  content: string;
+  timestamp: string;
+}
+
+// Store messages per session for reconnection
+const sessionMessages = new Map<string, BufferedMessage[]>();
+let globalMessageId = 0;
+
+// Get next message ID
+function getNextMessageId(): number {
+  return ++globalMessageId;
+}
+
+// Buffer a message for a session
+function bufferMessage(sessionId: string, type: string, content: string): BufferedMessage {
+  const message: BufferedMessage = {
+    id: getNextMessageId(),
+    type,
+    content,
+    timestamp: new Date().toISOString()
+  };
+
+  if (!sessionMessages.has(sessionId)) {
+    sessionMessages.set(sessionId, []);
+  }
+
+  const messages = sessionMessages.get(sessionId)!;
+  messages.push(message);
+
+  // Keep only the last MESSAGE_BUFFER_SIZE messages
+  if (messages.length > MESSAGE_BUFFER_SIZE) {
+    messages.shift();
+  }
+
+  return message;
+}
+
+// Get messages since a given ID for a session
+function getMessagesSince(sessionId: string, sinceId: number): BufferedMessage[] {
+  const messages = sessionMessages.get(sessionId);
+  if (!messages) return [];
+
+  return messages.filter(m => m.id > sinceId);
+}
 
 // Broadcast log to all connected clients
 function broadcastLog(level: 'info' | 'warn' | 'error', message: string) {
@@ -269,6 +319,21 @@ app.get('/sessions', async (_req, res) => {
   }
 });
 
+// Get missed messages since a given message ID
+app.get('/sessions/:sessionId/messages', (req, res) => {
+  const { sessionId } = req.params;
+  const sinceId = parseInt(req.query.since as string) || 0;
+
+  const messages = getMessagesSince(sessionId, sinceId);
+  res.json({
+    messages,
+    latestId: messages.length > 0 ? messages[messages.length - 1].id : sinceId
+  });
+});
+
+// Track session ID per connection
+const connectionSessions = new Map<WebSocket, string>();
+
 wss.on('connection', (ws) => {
   console.log('Client connected');
 
@@ -279,26 +344,38 @@ wss.on('connection', (ws) => {
   const manager = new ClaudeCodeManager(WORKING_DIR);
   managers.set(ws, manager);
 
+  // Helper to send buffered message with ID
+  const sendBufferedMessage = (type: string, content: string) => {
+    const currentSessionId = connectionSessions.get(ws);
+    if (currentSessionId) {
+      const buffered = bufferMessage(currentSessionId, type, content);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ ...buffered }));
+      }
+    } else if (ws.readyState === WebSocket.OPEN) {
+      // No session yet, send without buffering (connection status messages)
+      ws.send(JSON.stringify({ type, content }));
+    }
+  };
+
   // Send initial status
   ws.send(JSON.stringify({ type: 'status', content: 'connected' }));
 
-  // Forward manager events to WebSocket
+  // Forward manager events to WebSocket with buffering
   manager.on('output', (data) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(data));
-    }
+    sendBufferedMessage(data.type, data.content);
   });
 
   manager.on('sessionId', (sessionId) => {
+    // Track session for this connection
+    connectionSessions.set(ws, sessionId);
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'session', content: sessionId }));
     }
   });
 
   manager.on('error', (error) => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'error', content: error.message }));
-    }
+    sendBufferedMessage('error', error.message);
   });
 
   // Handle incoming messages
@@ -329,6 +406,8 @@ wss.on('connection', (ws) => {
         case 'resume':
           if (message.sessionId && typeof message.sessionId === 'string') {
             manager.setSessionId(message.sessionId);
+            // Track session for this connection (for message buffering)
+            connectionSessions.set(ws, message.sessionId);
             ws.send(JSON.stringify({ type: 'session', content: message.sessionId }));
             ws.send(JSON.stringify({ type: 'status', content: 'resumed' }));
           }
@@ -349,6 +428,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     console.log('Client disconnected');
     allClients.delete(ws);
+    connectionSessions.delete(ws);
     // Don't abort the manager - let Claude process complete in background
     // The session will be saved and can be resumed
     managers.delete(ws);
@@ -357,6 +437,7 @@ wss.on('connection', (ws) => {
   ws.on('error', (error) => {
     console.error('WebSocket error:', error);
     allClients.delete(ws);
+    connectionSessions.delete(ws);
     managers.delete(ws);
   });
 });

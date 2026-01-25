@@ -35,6 +35,13 @@ interface WebcamDevice {
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 type ActiveTab = 'terminal' | 'logs' | 'webcams'
 
+interface BufferedMessage {
+  id: number
+  type: 'output' | 'error' | 'status' | 'complete'
+  content: string
+  timestamp: string
+}
+
 function App() {
   const [messages, setMessages] = useState<Message[]>([])
   const [logMessages, setLogMessages] = useState<LogMessage[]>([])
@@ -59,6 +66,8 @@ function App() {
   const webcamsContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
+  const lastMessageIdRef = useRef<number>(0)
+  const sessionIdRef = useRef<string | null>(null)
 
   const addMessage = useCallback((type: Message['type'], content: string) => {
     const message: Message = {
@@ -93,7 +102,7 @@ function App() {
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       console.log('[WS] Connected')
       setStatus('connected')
 
@@ -103,6 +112,7 @@ function App() {
         localStorage.removeItem('restartSessionId')
         ws.send(JSON.stringify({ type: 'resume', sessionId: restartSessionId }))
         setSessionId(restartSessionId)
+        sessionIdRef.current = restartSessionId
 
         // Fetch and restore conversation history
         fetch(`http://${window.location.hostname}:3001/sessions/${restartSessionId}/history`)
@@ -127,6 +137,47 @@ function App() {
             console.error('Failed to fetch session history:', err)
             addMessage('status', `Restored session: ${restartSessionId}`)
           })
+      } else if (sessionIdRef.current && lastMessageIdRef.current > 0) {
+        // Reconnecting to an existing session - fetch any missed messages
+        const currentSession = sessionIdRef.current
+        const lastId = lastMessageIdRef.current
+        console.log(`[WS] Reconnecting, fetching messages since ID ${lastId} for session ${currentSession}`)
+
+        // Resume the session on the server
+        ws.send(JSON.stringify({ type: 'resume', sessionId: currentSession }))
+
+        try {
+          const res = await fetch(
+            `http://${window.location.hostname}:3001/sessions/${currentSession}/messages?since=${lastId}`
+          )
+          const data: { messages: BufferedMessage[]; latestId: number } = await res.json()
+
+          if (data.messages.length > 0) {
+            console.log(`[WS] Fetched ${data.messages.length} missed messages`)
+            // Add missed messages to the UI
+            data.messages.forEach(msg => {
+              if (msg.type === 'output' || msg.type === 'error') {
+                addMessage(msg.type, msg.content)
+              } else if (msg.type === 'status') {
+                if (msg.content === 'processing') {
+                  setStatus('processing')
+                } else if (msg.content === 'connected') {
+                  setStatus('connected')
+                }
+              } else if (msg.type === 'complete') {
+                setStatus('connected')
+              }
+            })
+            // Update the last message ID
+            lastMessageIdRef.current = data.latestId
+            addMessage('status', `Reconnected and fetched ${data.messages.length} missed message(s)`)
+          } else {
+            addMessage('status', 'Reconnected to Claude Code server')
+          }
+        } catch (err) {
+          console.error('Failed to fetch missed messages:', err)
+          addMessage('status', 'Reconnected to Claude Code server')
+        }
       } else {
         addMessage('status', 'Connected to Claude Code server')
       }
@@ -135,6 +186,11 @@ function App() {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
+
+        // Track message ID if present (for reconnection support)
+        if (data.id && typeof data.id === 'number') {
+          lastMessageIdRef.current = data.id
+        }
 
         switch (data.type) {
           case 'output':
@@ -160,6 +216,7 @@ function App() {
             break
           case 'session':
             setSessionId(data.content)
+            sessionIdRef.current = data.content
             addMessage('status', `Session: ${data.content}`)
             break
           case 'log':
@@ -375,6 +432,8 @@ function App() {
   const handleReset = () => {
     wsRef.current?.send(JSON.stringify({ type: 'reset' }))
     setSessionId(null)
+    sessionIdRef.current = null
+    lastMessageIdRef.current = 0
     setMessages([])
   }
 
@@ -387,6 +446,8 @@ function App() {
     // Reset current session and set new session ID
     wsRef.current?.send(JSON.stringify({ type: 'resume', sessionId: session.id }))
     setSessionId(session.id)
+    sessionIdRef.current = session.id
+    lastMessageIdRef.current = 0  // Reset message ID for new session
     setMessages([])
     setSidebarOpen(false)
 
