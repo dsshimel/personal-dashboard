@@ -113,6 +113,8 @@ function App() {
   const [loadingWebcams, setLoadingWebcams] = useState(false)
   const [webcamConnected, setWebcamConnected] = useState(false)
   const [fullscreenWebcam, setFullscreenWebcam] = useState<string | null>(null)
+  const [startingWebcams, setStartingWebcams] = useState<Set<string>>(new Set())
+  const [stoppingWebcams, setStoppingWebcams] = useState<Set<string>>(new Set())
 
   // Refs for mutable values that shouldn't trigger re-renders
   const isRestartingRef = useRef(false)
@@ -362,6 +364,11 @@ function App() {
             break
           case 'webcam-started':
             setActiveWebcams(prev => new Set(prev).add(data.deviceId))
+            setStartingWebcams(prev => {
+              const next = new Set(prev)
+              next.delete(data.deviceId)
+              return next
+            })
             break
           case 'webcam-stopped':
             setActiveWebcams(prev => {
@@ -371,6 +378,11 @@ function App() {
             })
             setWebcamFrames(prev => {
               const next = new Map(prev)
+              next.delete(data.deviceId)
+              return next
+            })
+            setStoppingWebcams(prev => {
+              const next = new Set(prev)
               next.delete(data.deviceId)
               return next
             })
@@ -660,6 +672,7 @@ function App() {
   /** Starts streaming from a specific webcam device. */
   const startWebcam = useCallback((deviceId: string) => {
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
+      setStartingWebcams(prev => new Set(prev).add(deviceId))
       webcamWsRef.current.send(JSON.stringify({ type: 'webcam-start', deviceId }))
     }
   }, [])
@@ -667,6 +680,7 @@ function App() {
   /** Stops streaming from a specific webcam device. */
   const stopWebcam = useCallback((deviceId: string) => {
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
+      setStoppingWebcams(prev => new Set(prev).add(deviceId))
       webcamWsRef.current.send(JSON.stringify({ type: 'webcam-stop', deviceId }))
     }
   }, [])
@@ -950,9 +964,9 @@ function App() {
                     <button
                       className={`webcam-toggle-button ${activeWebcams.has(device.id) ? 'stop' : 'start'}`}
                       onClick={() => activeWebcams.has(device.id) ? stopWebcam(device.id) : startWebcam(device.id)}
-                      disabled={!webcamConnected && !activeWebcams.has(device.id)}
+                      disabled={(!webcamConnected && !activeWebcams.has(device.id)) || startingWebcams.has(device.id) || stoppingWebcams.has(device.id)}
                     >
-                      {activeWebcams.has(device.id) ? 'Stop' : 'Start'}
+                      {startingWebcams.has(device.id) ? 'Starting...' : stoppingWebcams.has(device.id) ? 'Stopping...' : activeWebcams.has(device.id) ? 'Stop' : 'Start'}
                     </button>
                   </div>
                 ))}
@@ -973,8 +987,12 @@ function App() {
                         >
                           Fullscreen
                         </button>
-                        <button className="webcam-stop-button" onClick={() => stopWebcam(deviceId)}>
-                          Stop
+                        <button
+                          className="webcam-stop-button"
+                          onClick={() => stopWebcam(deviceId)}
+                          disabled={stoppingWebcams.has(deviceId)}
+                        >
+                          {stoppingWebcams.has(deviceId) ? 'Stopping...' : 'Stop'}
                         </button>
                       </div>
                     </div>
