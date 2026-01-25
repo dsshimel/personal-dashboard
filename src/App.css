@@ -480,6 +480,10 @@
   51%, 100% { opacity: 0.3; }
 }
 
+.message-ready .message-content {
+  color: #fbbf24;
+}
+
 .terminal-input-container {
   display: flex;
   align-items: center;

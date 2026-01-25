@@ -819,14 +819,18 @@ function App() {
               Type a message to start a conversation with Claude.
             </div>
           )}
-          {messages.map(msg => (
-            <div key={msg.id} className={`message message-${msg.type}`}>
-              {msg.type === 'input' && <span className="prompt">&gt; </span>}
-              {msg.type === 'error' && <span className="error-prefix">[ERROR] </span>}
-              {msg.type === 'status' && <span className="status-prefix">[STATUS] </span>}
-              <span className="message-content">{msg.content}</span>
-            </div>
-          ))}
+          {messages.map((msg, index) => {
+            const isLastMessage = index === messages.length - 1
+            const isReady = isLastMessage && status === 'connected' && messages.length > 0
+            return (
+              <div key={msg.id} className={`message message-${msg.type}${isReady ? ' message-ready' : ''}`}>
+                {msg.type === 'input' && <span className="prompt">&gt; </span>}
+                {msg.type === 'error' && <span className="error-prefix">[ERROR] </span>}
+                {msg.type === 'status' && <span className="status-prefix">[STATUS] </span>}
+                <span className="message-content">{msg.content}</span>
+              </div>
+            )
+          })}
           {status === 'processing' && (
             <div className="message message-tool">
               <span className="tool-indicator">
