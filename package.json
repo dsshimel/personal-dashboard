@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "vite",
     "server": "bun run server/index.ts",
-    "dev:all": "concurrently \"bun run dev\" \"bun run server\"",
+    "webcam": "bun run server/webcam-server.ts",
+    "dev:all": "concurrently \"bun run dev\" \"bun run server\" \"bun run webcam\"",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview --host 0.0.0.0 --port 5173",
-    "prod:all": "bun run build && concurrently \"bun run preview\" \"bun run server\"",
+    "prod:all": "bun run build && concurrently \"bun run preview\" \"bun run server\" \"bun run webcam\"",
     "prod:watch": "bun run build && bun run server/restart-watcher.ts",
     "test:server": "bun test server/"
   },

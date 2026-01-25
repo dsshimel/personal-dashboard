@@ -26,8 +26,14 @@ interface Session {
   project: string
 }
 
+interface WebcamDevice {
+  id: string
+  name: string
+  type: 'video' | 'audio'
+}
+
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
-type ActiveTab = 'terminal' | 'logs'
+type ActiveTab = 'terminal' | 'logs' | 'webcams'
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([])
@@ -40,8 +46,14 @@ function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('terminal')
   const [loadingSessions, setLoadingSessions] = useState(false)
   const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
+  const [webcamDevices, setWebcamDevices] = useState<WebcamDevice[]>([])
+  const [activeWebcams, setActiveWebcams] = useState<Set<string>>(new Set())
+  const [webcamFrames, setWebcamFrames] = useState<Map<string, string>>(new Map())
+  const [loadingWebcams, setLoadingWebcams] = useState(false)
+  const [webcamConnected, setWebcamConnected] = useState(false)
   const isRestartingRef = useRef(false)
   const wsRef = useRef<WebSocket | null>(null)
+  const webcamWsRef = useRef<WebSocket | null>(null)
   const outputRef = useRef<HTMLDivElement>(null)
   const logsOutputRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -182,6 +194,70 @@ function App() {
       addMessage('error', `WebSocket error connecting to ${wsUrl}`)
     }
   }, [addMessage, addLogMessage])
+
+  // Connect to webcam server (separate port)
+  const connectWebcam = useCallback(() => {
+    if (webcamWsRef.current?.readyState === WebSocket.OPEN) return
+
+    const wsUrl = `ws://${window.location.hostname}:3002`
+    console.log('[Webcam WS] Connecting to:', wsUrl)
+
+    const ws = new WebSocket(wsUrl)
+    webcamWsRef.current = ws
+
+    ws.onopen = () => {
+      console.log('[Webcam WS] Connected')
+      setWebcamConnected(true)
+    }
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+
+        switch (data.type) {
+          case 'webcam-devices':
+            setWebcamDevices(data.devices)
+            setLoadingWebcams(false)
+            break
+          case 'webcam-frame':
+            setWebcamFrames(prev => new Map(prev).set(data.deviceId, data.data))
+            break
+          case 'webcam-started':
+            setActiveWebcams(prev => new Set(prev).add(data.deviceId))
+            break
+          case 'webcam-stopped':
+            setActiveWebcams(prev => {
+              const next = new Set(prev)
+              next.delete(data.deviceId)
+              return next
+            })
+            setWebcamFrames(prev => {
+              const next = new Map(prev)
+              next.delete(data.deviceId)
+              return next
+            })
+            break
+          case 'webcam-error':
+            console.error('[Webcam]', data.error)
+            break
+        }
+      } catch {
+        // Ignore parse errors
+      }
+    }
+
+    ws.onclose = () => {
+      console.log('[Webcam WS] Closed')
+      webcamWsRef.current = null
+      setWebcamConnected(false)
+      setActiveWebcams(new Set())
+      setWebcamFrames(new Map())
+    }
+
+    ws.onerror = (event) => {
+      console.error('[Webcam WS] Error:', event)
+    }
+  }, [])
 
   // Fetch sessions from API
   const fetchSessions = useCallback(async () => {
@@ -402,6 +478,39 @@ function App() {
     setLogMessages([])
   }
 
+  const requestWebcamList = useCallback(() => {
+    if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
+      setLoadingWebcams(true)
+      webcamWsRef.current.send(JSON.stringify({ type: 'webcam-list' }))
+    }
+  }, [])
+
+  const startWebcam = useCallback((deviceId: string) => {
+    if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
+      webcamWsRef.current.send(JSON.stringify({ type: 'webcam-start', deviceId }))
+    }
+  }, [])
+
+  const stopWebcam = useCallback((deviceId: string) => {
+    if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
+      webcamWsRef.current.send(JSON.stringify({ type: 'webcam-stop', deviceId }))
+    }
+  }, [])
+
+  // Connect to webcam server and fetch list when webcams tab is activated
+  useEffect(() => {
+    if (activeTab === 'webcams') {
+      connectWebcam()
+    }
+  }, [activeTab, connectWebcam])
+
+  // Fetch webcam list when connected to webcam server
+  useEffect(() => {
+    if (activeTab === 'webcams' && webcamConnected) {
+      requestWebcamList()
+    }
+  }, [activeTab, webcamConnected, requestWebcamList])
+
   return (
     <div className="app-container">
       {/* Sidebar */}
@@ -491,6 +600,13 @@ function App() {
             Server Logs
             {logMessages.length > 0 && <span className="tab-badge">{logMessages.length}</span>}
           </button>
+          <button
+            className={`tab ${activeTab === 'webcams' ? 'active' : ''}`}
+            onClick={() => setActiveTab('webcams')}
+          >
+            Webcams
+            {activeWebcams.size > 0 && <span className="tab-badge">{activeWebcams.size}</span>}
+          </button>
         </div>
 
         {/* Terminal output */}
@@ -536,6 +652,81 @@ function App() {
                 <span className="log-content">{log.content}</span>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Webcams output */}
+        {activeTab === 'webcams' && (
+          <div className="webcams-container">
+            <div className="webcams-header">
+              <h3>Available Webcams</h3>
+              <button
+                className="refresh-webcams-button"
+                onClick={requestWebcamList}
+                disabled={loadingWebcams}
+              >
+                {loadingWebcams ? 'Scanning...' : 'Refresh'}
+              </button>
+            </div>
+
+            {loadingWebcams && webcamDevices.length === 0 && (
+              <div className="welcome-message">Scanning for webcams...</div>
+            )}
+
+            {!loadingWebcams && webcamDevices.length === 0 && (
+              <div className="welcome-message">
+                No webcams detected.
+                <br />
+                Make sure your webcam is connected and click Refresh.
+              </div>
+            )}
+
+            {webcamDevices.length > 0 && (
+              <div className="webcam-devices-list">
+                {webcamDevices.map(device => (
+                  <div key={device.id} className="webcam-device-item">
+                    <div className="webcam-device-info">
+                      <span className="webcam-device-name">{device.name}</span>
+                      <span className={`webcam-status ${activeWebcams.has(device.id) ? 'streaming' : 'stopped'}`}>
+                        {activeWebcams.has(device.id) ? 'Streaming' : 'Stopped'}
+                      </span>
+                    </div>
+                    <button
+                      className={`webcam-toggle-button ${activeWebcams.has(device.id) ? 'stop' : 'start'}`}
+                      onClick={() => activeWebcams.has(device.id) ? stopWebcam(device.id) : startWebcam(device.id)}
+                    >
+                      {activeWebcams.has(device.id) ? 'Stop' : 'Start'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeWebcams.size > 0 && (
+              <div className="webcam-feeds">
+                {Array.from(activeWebcams).map(deviceId => (
+                  <div key={deviceId} className="webcam-feed">
+                    <div className="webcam-feed-header">
+                      <span>{webcamDevices.find(d => d.id === deviceId)?.name || deviceId}</span>
+                      <button className="webcam-stop-button" onClick={() => stopWebcam(deviceId)}>
+                        Stop
+                      </button>
+                    </div>
+                    <div className="webcam-video-container">
+                      {webcamFrames.has(deviceId) ? (
+                        <img
+                          src={`data:image/jpeg;base64,${webcamFrames.get(deviceId)}`}
+                          alt={`Webcam feed: ${deviceId}`}
+                          className="webcam-video"
+                        />
+                      ) : (
+                        <div className="webcam-loading">Waiting for frames...</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
