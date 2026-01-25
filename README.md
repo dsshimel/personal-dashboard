@@ -1,75 +1,82 @@
-# React + TypeScript + Vite
+# Personal Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A web-based terminal interface for Claude Code CLI with multi-webcam streaming support. Designed to run on a home server and be accessed remotely via Tailscale or local network.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **Claude Code Terminal** - Interactive web terminal for the Claude Code CLI with session persistence and history
+- **Multi-Webcam Streaming** - Stream multiple webcams simultaneously via FFmpeg with real-time MJPEG encoding
+- **Fullscreen Mode** - True browser fullscreen with automatic HD resolution (1080p @ 30fps) switching
+- **Server Logs** - Real-time server log streaming for debugging
+- **Session Management** - Resume previous conversations, view session history
 
-## React Compiler
+## Requirements
 
-The React Compiler is enabled on this template. See [this documentation](https://react.dev/learn/react-compiler) for more information.
+- [Bun](https://bun.sh) runtime
+- [FFmpeg](https://ffmpeg.org) (for webcam streaming)
+- [Claude Code CLI](https://github.com/anthropics/claude-code) installed and authenticated
 
-Note: This will impact Vite dev & build performances.
+## Quick Start
 
-## Expanding the ESLint configuration
+```bash
+# Install dependencies
+bun install
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+# Run development servers (frontend + backend)
+bun run dev:all
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+# Or run production build
+bun run prod:all
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Commands
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+bun run dev:all      # Development (frontend + backend servers)
+bun run prod:all     # Production build and serve
+bun run server       # Backend only (port 3001)
+bun run webcam       # Webcam server only (port 3002)
+bun test server/     # Run server tests
+bun run lint         # Run ESLint
 ```
+
+## Architecture
+
+```
+Browser
+  ├─ WebSocket :3001 ─→ Express Server ─→ ClaudeCodeManager ─→ Claude CLI
+  └─ WebSocket :3002 ─→ WebcamServer ─→ WebcamManager ─→ FFmpeg
+```
+
+## Ports
+
+- **5173** - Vite dev server (frontend)
+- **3001** - Main WebSocket server (Claude CLI)
+- **3002** - Webcam WebSocket server
+
+## Directory Structure
+
+```
+personal-dashboard/
+├── src/           # React frontend (single-page app)
+│   ├── App.tsx    # Main component with all UI and state
+│   └── App.css    # Styling
+├── server/        # Backend servers
+│   ├── index.ts           # Express + WebSocket server
+│   ├── claude-code.ts     # Claude CLI process manager
+│   ├── webcam-server.ts   # Webcam WebSocket server
+│   └── webcam-manager.ts  # FFmpeg webcam streaming
+└── CLAUDE.md      # Detailed technical documentation
+```
+
+## Webcam Features
+
+- Auto-detect connected webcams via FFmpeg DirectShow
+- Multiple simultaneous streams in grid layout
+- Click to fullscreen with HD mode (1920x1080 @ 30fps)
+- Auto-reconnect on connection loss
+- Resolution switching (640x480 for grid, 1080p for fullscreen)
+
+## License
+
+MIT
