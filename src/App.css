@@ -307,6 +307,11 @@
   color: #fff;
 }
 
+/* Hidden tab content - keeps scroll position */
+.tab-hidden {
+  display: none !important;
+}
+
 .terminal-output {
   flex: 1;
   overflow-y: auto;

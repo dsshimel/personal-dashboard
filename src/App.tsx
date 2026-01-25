@@ -59,7 +59,6 @@ function App() {
   const webcamsContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
-  const scrollPositionsRef = useRef<Record<ActiveTab, number>>({ terminal: 0, logs: 0, webcams: 0 })
 
   const addMessage = useCallback((type: Message['type'], content: string) => {
     const message: Message = {
@@ -480,32 +479,9 @@ function App() {
     setLogMessages([])
   }
 
-  const getScrollContainerForTab = useCallback((tab: ActiveTab) => {
-    switch (tab) {
-      case 'terminal': return outputRef.current
-      case 'logs': return logsOutputRef.current
-      case 'webcams': return webcamsContainerRef.current
-    }
-  }, [])
-
   const handleTabChange = useCallback((newTab: ActiveTab) => {
-    // Save current tab's scroll position
-    const currentContainer = getScrollContainerForTab(activeTab)
-    if (currentContainer) {
-      scrollPositionsRef.current[activeTab] = currentContainer.scrollTop
-    }
-
-    // Switch to new tab
     setActiveTab(newTab)
-
-    // Restore new tab's scroll position after render
-    requestAnimationFrame(() => {
-      const newContainer = getScrollContainerForTab(newTab)
-      if (newContainer) {
-        newContainer.scrollTop = scrollPositionsRef.current[newTab]
-      }
-    })
-  }, [activeTab, getScrollContainerForTab])
+  }, [])
 
   const requestWebcamList = useCallback(() => {
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
@@ -638,55 +614,50 @@ function App() {
           </button>
         </div>
 
-        {/* Terminal output */}
-        {activeTab === 'terminal' && (
-          <div className="terminal-output" ref={outputRef}>
-            {messages.length === 0 && (
-              <div className="welcome-message">
-                Welcome to Claude Code Terminal.
-                <br />
-                Type a message to start a conversation with Claude.
-              </div>
-            )}
-            {messages.map(msg => (
-              <div key={msg.id} className={`message message-${msg.type}`}>
-                {msg.type === 'input' && <span className="prompt">&gt; </span>}
-                {msg.type === 'error' && <span className="error-prefix">[ERROR] </span>}
-                {msg.type === 'status' && <span className="status-prefix">[STATUS] </span>}
-                <span className="message-content">{msg.content}</span>
-              </div>
-            ))}
-            {status === 'processing' && (
-              <div className="message message-status">
-                <span className="processing-indicator">...</span>
-              </div>
-            )}
-          </div>
-        )}
+        {/* Terminal output - always mounted, hidden when inactive */}
+        <div className={`terminal-output ${activeTab !== 'terminal' ? 'tab-hidden' : ''}`} ref={outputRef}>
+          {messages.length === 0 && (
+            <div className="welcome-message">
+              Welcome to Claude Code Terminal.
+              <br />
+              Type a message to start a conversation with Claude.
+            </div>
+          )}
+          {messages.map(msg => (
+            <div key={msg.id} className={`message message-${msg.type}`}>
+              {msg.type === 'input' && <span className="prompt">&gt; </span>}
+              {msg.type === 'error' && <span className="error-prefix">[ERROR] </span>}
+              {msg.type === 'status' && <span className="status-prefix">[STATUS] </span>}
+              <span className="message-content">{msg.content}</span>
+            </div>
+          ))}
+          {status === 'processing' && (
+            <div className="message message-status">
+              <span className="processing-indicator">...</span>
+            </div>
+          )}
+        </div>
 
-        {/* Logs output */}
-        {activeTab === 'logs' && (
-          <div className="logs-output" ref={logsOutputRef}>
-            {logMessages.length === 0 && (
-              <div className="welcome-message">
-                No server logs yet.
-                <br />
-                Logs will appear here as the server processes requests.
-              </div>
-            )}
-            {logMessages.map(log => (
-              <div key={log.id} className={`log-message log-${log.level}`}>
-                <span className="log-timestamp">[{formatLogTime(log.timestamp)}]</span>
-                <span className={`log-level log-level-${log.level}`}>[{log.level.toUpperCase()}]</span>
-                <span className="log-content">{log.content}</span>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* Logs output - always mounted, hidden when inactive */}
+        <div className={`logs-output ${activeTab !== 'logs' ? 'tab-hidden' : ''}`} ref={logsOutputRef}>
+          {logMessages.length === 0 && (
+            <div className="welcome-message">
+              No server logs yet.
+              <br />
+              Logs will appear here as the server processes requests.
+            </div>
+          )}
+          {logMessages.map(log => (
+            <div key={log.id} className={`log-message log-${log.level}`}>
+              <span className="log-timestamp">[{formatLogTime(log.timestamp)}]</span>
+              <span className={`log-level log-level-${log.level}`}>[{log.level.toUpperCase()}]</span>
+              <span className="log-content">{log.content}</span>
+            </div>
+          ))}
+        </div>
 
-        {/* Webcams output */}
-        {activeTab === 'webcams' && (
-          <div className="webcams-container" ref={webcamsContainerRef}>
+        {/* Webcams output - always mounted, hidden when inactive */}
+        <div className={`webcams-container ${activeTab !== 'webcams' ? 'tab-hidden' : ''}`} ref={webcamsContainerRef}>
             <div className="webcams-header">
               <h3>Available Webcams</h3>
               <button
@@ -756,8 +727,7 @@ function App() {
                 ))}
               </div>
             )}
-          </div>
-        )}
+        </div>
 
         {/* Input container - only show on terminal tab */}
         {activeTab === 'terminal' && (
