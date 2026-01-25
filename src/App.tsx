@@ -124,6 +124,7 @@ function App() {
   const inputRef = useRef<HTMLInputElement>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
   const webcamReconnectTimeoutRef = useRef<number | null>(null)
+  const previousActiveWebcamsRef = useRef<Set<string>>(new Set())
   const lastMessageIdRef = useRef<number>(0)
   const sessionIdRef = useRef<string | null>(null)
 
@@ -387,7 +388,13 @@ function App() {
       console.log('[Webcam WS] Closed')
       webcamWsRef.current = null
       setWebcamConnected(false)
-      setActiveWebcams(new Set())
+      // Save active webcams before clearing so we can restore them on reconnect
+      setActiveWebcams(prev => {
+        if (prev.size > 0) {
+          previousActiveWebcamsRef.current = new Set(prev)
+        }
+        return new Set()
+      })
       setWebcamFrames(new Map())
 
       // Auto-reconnect after 3 seconds if on webcams tab
@@ -729,6 +736,21 @@ function App() {
     }
   }, [activeTab, webcamConnected, requestWebcamList])
 
+  // Restore previously active webcams after reconnection
+  useEffect(() => {
+    if (webcamConnected && webcamDevices.length > 0 && previousActiveWebcamsRef.current.size > 0) {
+      const toRestore = previousActiveWebcamsRef.current
+      previousActiveWebcamsRef.current = new Set()
+      // Only restore webcams that still exist in the device list
+      const validDeviceIds = new Set(webcamDevices.map(d => d.id))
+      for (const deviceId of toRestore) {
+        if (validDeviceIds.has(deviceId)) {
+          startWebcam(deviceId)
+        }
+      }
+    }
+  }, [webcamConnected, webcamDevices, startWebcam])
+
   return (
     <div className="app-container">
       {/* Sidebar */}
@@ -928,6 +950,7 @@ function App() {
                     <button
                       className={`webcam-toggle-button ${activeWebcams.has(device.id) ? 'stop' : 'start'}`}
                       onClick={() => activeWebcams.has(device.id) ? stopWebcam(device.id) : startWebcam(device.id)}
+                      disabled={!webcamConnected && !activeWebcams.has(device.id)}
                     >
                       {activeWebcams.has(device.id) ? 'Stop' : 'Start'}
                     </button>
