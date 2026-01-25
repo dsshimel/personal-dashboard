@@ -16,9 +16,9 @@ export interface ClaudeMessage {
   type: 'init' | 'assistant' | 'user' | 'result' | 'system' | 'error';
   /** Session ID assigned by Claude CLI. */
   session_id?: string;
-  /** Message content with text blocks. */
+  /** Message content with text blocks and tool use blocks. */
   message?: {
-    content?: Array<{ type: string; text?: string }>;
+    content?: Array<{ type: string; text?: string; name?: string }>;
   };
   /** Direct content for error messages. */
   content?: string;
@@ -32,8 +32,8 @@ export interface ClaudeMessage {
  * Event signatures emitted by ClaudeCodeManager.
  */
 export interface ManagerEvents {
-  /** Emitted for output, error, status changes, and completion. */
-  output: (data: { type: 'output' | 'error' | 'status' | 'complete'; content: string }) => void;
+  /** Emitted for output, error, status changes, tool use, and completion. */
+  output: (data: { type: 'output' | 'error' | 'status' | 'complete' | 'tool'; content: string }) => void;
   /** Emitted when a new session ID is assigned. */
   sessionId: (sessionId: string) => void;
   /** Emitted on process errors. */
@@ -280,6 +280,8 @@ export class ClaudeCodeManager extends EventEmitter {
             for (const block of parsed.message.content) {
               if (block.type === 'text' && block.text) {
                 this.emit('output', { type: 'output', content: block.text });
+              } else if (block.type === 'tool_use' && block.name) {
+                this.emit('output', { type: 'tool', content: block.name });
               }
             }
           }

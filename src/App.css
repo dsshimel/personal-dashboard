@@ -464,6 +464,17 @@
   color: #60a5fa;
 }
 
+.message-tool {
+  color: #a78bfa;
+  font-size: 12px;
+  font-style: italic;
+}
+
+.tool-indicator {
+  display: inline-block;
+  animation: blink 1s infinite;
+}
+
 @keyframes blink {
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0.3; }

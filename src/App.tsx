@@ -90,6 +90,7 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<ConnectionStatus>('disconnected')
+  const [currentTool, setCurrentTool] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
 
   // Server logs state
@@ -276,6 +277,10 @@ function App() {
             break
           case 'complete':
             setStatus('connected')
+            setCurrentTool(null)
+            break
+          case 'tool':
+            setCurrentTool(data.content)
             break
           case 'session':
             setSessionId(data.content)
@@ -823,8 +828,10 @@ function App() {
             </div>
           ))}
           {status === 'processing' && (
-            <div className="message message-status">
-              <span className="processing-indicator">...</span>
+            <div className="message message-tool">
+              <span className="tool-indicator">
+                {currentTool ? `Using ${currentTool}...` : 'Processing...'}
+              </span>
             </div>
           )}
         </div>
