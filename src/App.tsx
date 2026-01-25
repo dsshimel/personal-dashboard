@@ -104,6 +104,7 @@ function App() {
   // UI state
   const [activeTab, setActiveTab] = useState<ActiveTab>('terminal')
   const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
+  const [showScrollButton, setShowScrollButton] = useState(false)
 
   // Webcam state
   const [webcamDevices, setWebcamDevices] = useState<WebcamDevice[]>([])
@@ -663,6 +664,22 @@ function App() {
     }
   }, [])
 
+  /** Scrolls the terminal output to the bottom. */
+  const scrollToBottom = useCallback(() => {
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight
+    }
+  }, [])
+
+  /** Handles scroll events to show/hide the scroll-to-bottom button. */
+  const handleTerminalScroll = useCallback(() => {
+    if (outputRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = outputRef.current
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100
+      setShowScrollButton(!isNearBottom)
+    }
+  }, [])
+
   /** Toggles fullscreen mode for a webcam feed, with optional screen orientation lock. */
   const toggleFullscreenWebcam = useCallback((deviceId: string | null) => {
     setFullscreenWebcam(deviceId)
@@ -811,7 +828,11 @@ function App() {
         </div>
 
         {/* Terminal output - always mounted, hidden when inactive */}
-        <div className={`terminal-output ${activeTab !== 'terminal' ? 'tab-hidden' : ''}`} ref={outputRef}>
+        <div
+          className={`terminal-output ${activeTab !== 'terminal' ? 'tab-hidden' : ''}`}
+          ref={outputRef}
+          onScroll={handleTerminalScroll}
+        >
           {messages.length === 0 && (
             <div className="welcome-message">
               Welcome to Claude Code Terminal.
@@ -839,6 +860,17 @@ function App() {
             </div>
           )}
         </div>
+
+        {/* Scroll to bottom button */}
+        {activeTab === 'terminal' && showScrollButton && (
+          <button
+            className="scroll-to-bottom-button"
+            onClick={scrollToBottom}
+            aria-label="Scroll to bottom"
+          >
+            ↓
+          </button>
+        )}
 
         {/* Logs output - always mounted, hidden when inactive */}
         <div className={`logs-output ${activeTab !== 'logs' ? 'tab-hidden' : ''}`} ref={logsOutputRef}>
