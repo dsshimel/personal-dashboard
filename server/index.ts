@@ -27,6 +27,9 @@ const wss = new WebSocketServer({ server });
 /** Maps WebSocket connections to their ClaudeCodeManager instances. */
 const managers = new Map<WebSocket, ClaudeCodeManager>();
 
+/** Maps session IDs to their ClaudeCodeManager instances for reconnection support. */
+const sessionManagers = new Map<string, ClaudeCodeManager>();
+
 /** All connected clients for broadcasting server logs. */
 const allClients = new Set<WebSocket>();
 
@@ -368,49 +371,79 @@ app.get('/sessions/:sessionId/messages', (req, res) => {
 /** Maps WebSocket connections to their current session ID for message buffering. */
 const connectionSessions = new Map<WebSocket, string>();
 
+/**
+ * Sets up event listeners on a manager to forward output to a WebSocket.
+ * Returns a cleanup function to remove the listeners.
+ */
+function attachManagerToWebSocket(
+  manager: ClaudeCodeManager,
+  ws: WebSocket,
+  getSessionId: () => string | undefined
+): () => void {
+  const outputHandler = (data: { type: string; content: string }) => {
+    const sessionId = getSessionId();
+    if (sessionId) {
+      const buffered = bufferMessage(sessionId, data.type, data.content);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ ...buffered }));
+      }
+    } else if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: data.type, content: data.content }));
+    }
+  };
+
+  const sessionIdHandler = (sessionId: string) => {
+    connectionSessions.set(ws, sessionId);
+    // Store manager by session ID for reconnection
+    sessionManagers.set(sessionId, manager);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'session', content: sessionId }));
+    }
+  };
+
+  const errorHandler = (error: Error) => {
+    const sessionId = getSessionId();
+    if (sessionId) {
+      const buffered = bufferMessage(sessionId, 'error', error.message);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ ...buffered }));
+      }
+    } else if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'error', content: error.message }));
+    }
+  };
+
+  manager.on('output', outputHandler);
+  manager.on('sessionId', sessionIdHandler);
+  manager.on('error', errorHandler);
+
+  // Return cleanup function
+  return () => {
+    manager.off('output', outputHandler);
+    manager.off('sessionId', sessionIdHandler);
+    manager.off('error', errorHandler);
+  };
+}
+
 wss.on('connection', (ws) => {
   console.log('Client connected');
 
   // Add to all clients set for log broadcasting
   allClients.add(ws);
 
-  // Create a new manager for this connection
-  const manager = new ClaudeCodeManager(WORKING_DIR);
+  // Create a new manager for this connection (may be replaced on resume)
+  let manager = new ClaudeCodeManager(WORKING_DIR);
   managers.set(ws, manager);
 
-  // Helper to send buffered message with ID
-  const sendBufferedMessage = (type: string, content: string) => {
-    const currentSessionId = connectionSessions.get(ws);
-    if (currentSessionId) {
-      const buffered = bufferMessage(currentSessionId, type, content);
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ ...buffered }));
-      }
-    } else if (ws.readyState === WebSocket.OPEN) {
-      // No session yet, send without buffering (connection status messages)
-      ws.send(JSON.stringify({ type, content }));
-    }
-  };
+  // Track cleanup function for manager event listeners
+  let cleanupListeners = attachManagerToWebSocket(
+    manager,
+    ws,
+    () => connectionSessions.get(ws)
+  );
 
   // Send initial status
   ws.send(JSON.stringify({ type: 'status', content: 'connected' }));
-
-  // Forward manager events to WebSocket with buffering
-  manager.on('output', (data) => {
-    sendBufferedMessage(data.type, data.content);
-  });
-
-  manager.on('sessionId', (sessionId) => {
-    // Track session for this connection
-    connectionSessions.set(ws, sessionId);
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'session', content: sessionId }));
-    }
-  });
-
-  manager.on('error', (error) => {
-    sendBufferedMessage('error', error.message);
-  });
 
   // Handle incoming messages
   ws.on('message', async (data) => {
@@ -432,18 +465,43 @@ wss.on('connection', (ws) => {
           manager.abort();
           break;
 
-        case 'reset':
+        case 'reset': {
+          const oldSessionId = connectionSessions.get(ws);
+          if (oldSessionId) {
+            sessionManagers.delete(oldSessionId);
+          }
           manager.reset();
           ws.send(JSON.stringify({ type: 'status', content: 'reset' }));
           break;
+        }
 
         case 'resume':
           if (message.sessionId && typeof message.sessionId === 'string') {
-            manager.setSessionId(message.sessionId);
-            // Track session for this connection (for message buffering)
+            const existingManager = sessionManagers.get(message.sessionId);
+
+            if (existingManager && existingManager.isRunning()) {
+              // Reattach to existing running manager
+              console.log(`[Server] Reattaching to running manager for session ${message.sessionId}`);
+              cleanupListeners(); // Remove listeners from old manager
+              manager = existingManager;
+              managers.set(ws, manager);
+              cleanupListeners = attachManagerToWebSocket(
+                manager,
+                ws,
+                () => connectionSessions.get(ws)
+              );
+            } else {
+              // No running manager, just set session ID on current manager
+              manager.setSessionId(message.sessionId);
+              sessionManagers.set(message.sessionId, manager);
+            }
+
             connectionSessions.set(ws, message.sessionId);
             ws.send(JSON.stringify({ type: 'session', content: message.sessionId }));
-            ws.send(JSON.stringify({ type: 'status', content: 'resumed' }));
+            ws.send(JSON.stringify({
+              type: 'status',
+              content: existingManager?.isRunning() ? 'processing' : 'resumed'
+            }));
           }
           break;
 
@@ -463,8 +521,7 @@ wss.on('connection', (ws) => {
     console.log('Client disconnected');
     allClients.delete(ws);
     connectionSessions.delete(ws);
-    // Don't abort the manager - let Claude process complete in background
-    // The session will be saved and can be resumed
+    cleanupListeners(); // Remove event listeners but keep manager in sessionManagers
     managers.delete(ws);
   });
 
@@ -472,6 +529,7 @@ wss.on('connection', (ws) => {
     console.error('WebSocket error:', error);
     allClients.delete(ws);
     connectionSessions.delete(ws);
+    cleanupListeners();
     managers.delete(ws);
   });
 });
