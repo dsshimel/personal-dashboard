@@ -482,6 +482,18 @@
 
 .message-ready .message-content {
   color: #fde047;
+  animation: shimmer 3s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0%, 100% {
+    color: #fde047;
+    text-shadow: 0 0 0 transparent;
+  }
+  50% {
+    color: #fef9c3;
+    text-shadow: 0 0 8px rgba(253, 224, 71, 0.6), 0 0 16px rgba(253, 224, 71, 0.3);
+  }
 }
 
 .terminal-input-container {
