@@ -1,3 +1,10 @@
+/**
+ * @fileoverview Unit tests for ClaudeCodeManager.
+ *
+ * Tests the manager's session handling, argument building, JSON line parsing,
+ * and process lifecycle management.
+ */
+
 import { describe, test, expect, beforeEach, mock } from 'bun:test';
 import { ClaudeCodeManager } from './claude-code';
 

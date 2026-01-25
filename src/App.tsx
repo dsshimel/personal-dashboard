@@ -1,64 +1,118 @@
+/**
+ * @fileoverview Main React application component for the Claude Code web terminal.
+ *
+ * Provides a browser-based terminal interface to interact with Claude Code CLI,
+ * with additional features for server log viewing and webcam streaming.
+ */
+
 import { useState, useEffect, useRef, useCallback } from 'react'
 import './App.css'
 
-// Generate unique ID (crypto.randomUUID requires HTTPS on mobile)
+/**
+ * Counter for generating unique message IDs.
+ * Uses timestamp + counter instead of crypto.randomUUID for mobile HTTPS compatibility.
+ */
 let idCounter = 0
+
+/** Generates a unique message ID combining timestamp and incrementing counter. */
 const generateId = () => `msg-${Date.now()}-${++idCounter}`
 
+/** Represents a terminal message displayed in the output area. */
 interface Message {
+  /** Unique identifier for React key prop. */
   id: string
+  /** Message type determines styling: input (user), output (Claude), error, or status. */
   type: 'input' | 'output' | 'error' | 'status'
+  /** The text content of the message. */
   content: string
+  /** When the message was created. */
   timestamp: Date
 }
 
+/** Represents a server log entry displayed in the logs tab. */
 interface LogMessage {
+  /** Unique identifier for React key prop. */
   id: string
+  /** Log severity level. */
   level: 'info' | 'warn' | 'error'
+  /** The log message text. */
   content: string
+  /** When the log was created on the server. */
   timestamp: Date
 }
 
+/** Represents a Claude Code conversation session. */
 interface Session {
+  /** UUID of the session. */
   id: string
+  /** Display name derived from slug or first message. */
   name: string
+  /** ISO timestamp of last modification. */
   lastModified: string
+  /** Project directory hash the session belongs to. */
   project: string
 }
 
+/** Represents a webcam device detected by FFmpeg. */
 interface WebcamDevice {
+  /** Device identifier (device name on Windows). */
   id: string
+  /** Human-readable device name. */
   name: string
+  /** Device type (only 'video' devices are shown). */
   type: 'video' | 'audio'
 }
 
+/** WebSocket connection and processing state. */
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
+
+/** Currently active UI tab. */
 type ActiveTab = 'terminal' | 'logs' | 'webcams'
 
+/** Message stored in server buffer for reconnection support. */
 interface BufferedMessage {
+  /** Sequential message ID for ordering. */
   id: number
+  /** Message type. */
   type: 'output' | 'error' | 'status' | 'complete'
+  /** Message content. */
   content: string
+  /** ISO timestamp. */
   timestamp: string
 }
 
+/**
+ * Main application component providing the terminal UI, session management,
+ * server log viewing, and webcam streaming functionality.
+ */
 function App() {
+  // Terminal state
   const [messages, setMessages] = useState<Message[]>([])
-  const [logMessages, setLogMessages] = useState<LogMessage[]>([])
   const [input, setInput] = useState('')
   const [status, setStatus] = useState<ConnectionStatus>('disconnected')
   const [sessionId, setSessionId] = useState<string | null>(null)
+
+  // Server logs state
+  const [logMessages, setLogMessages] = useState<LogMessage[]>([])
+
+  // Session sidebar state
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
-  const [activeTab, setActiveTab] = useState<ActiveTab>('terminal')
   const [loadingSessions, setLoadingSessions] = useState(false)
+
+  // UI state
+  const [activeTab, setActiveTab] = useState<ActiveTab>('terminal')
   const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
+
+  // Webcam state
   const [webcamDevices, setWebcamDevices] = useState<WebcamDevice[]>([])
   const [activeWebcams, setActiveWebcams] = useState<Set<string>>(new Set())
   const [webcamFrames, setWebcamFrames] = useState<Map<string, string>>(new Map())
   const [loadingWebcams, setLoadingWebcams] = useState(false)
   const [webcamConnected, setWebcamConnected] = useState(false)
   const [fullscreenWebcam, setFullscreenWebcam] = useState<string | null>(null)
+
+  // Refs for mutable values that shouldn't trigger re-renders
   const isRestartingRef = useRef(false)
   const wsRef = useRef<WebSocket | null>(null)
   const webcamWsRef = useRef<WebSocket | null>(null)
@@ -70,6 +124,7 @@ function App() {
   const lastMessageIdRef = useRef<number>(0)
   const sessionIdRef = useRef<string | null>(null)
 
+  /** Adds a new message to the terminal output. */
   const addMessage = useCallback((type: Message['type'], content: string) => {
     const message: Message = {
       id: generateId(),
@@ -80,6 +135,7 @@ function App() {
     setMessages(prev => [...prev, message])
   }, [])
 
+  /** Adds a new log entry to the server logs tab. */
   const addLogMessage = useCallback((level: LogMessage['level'], content: string, timestamp: string) => {
     const logMessage: LogMessage = {
       id: generateId(),
@@ -90,6 +146,10 @@ function App() {
     setLogMessages(prev => [...prev, logMessage])
   }, [])
 
+  /**
+   * Establishes WebSocket connection to the main server.
+   * Handles reconnection, session resumption, and message synchronization.
+   */
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
@@ -256,7 +316,10 @@ function App() {
     }
   }, [addMessage, addLogMessage])
 
-  // Connect to webcam server (separate port)
+  /**
+   * Establishes WebSocket connection to the webcam server (port 3002).
+   * Handles frame reception and device list updates.
+   */
   const connectWebcam = useCallback(() => {
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) return
 
@@ -320,7 +383,7 @@ function App() {
     }
   }, [])
 
-  // Fetch sessions from API
+  /** Fetches available sessions from the REST API for the sidebar. */
   const fetchSessions = useCallback(async () => {
     setLoadingSessions(true)
     try {
@@ -403,6 +466,7 @@ function App() {
     }
   }, [])
 
+  /** Sends the current input as a command to Claude via WebSocket. */
   const sendCommand = () => {
     if (!input.trim()) return
 
@@ -421,6 +485,7 @@ function App() {
     }
   }
 
+  /** Handles keyboard events: Enter to send, Ctrl+C to abort. */
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
@@ -432,6 +497,7 @@ function App() {
     }
   }
 
+  /** Resets the current session and clears message history. */
   const handleReset = () => {
     wsRef.current?.send(JSON.stringify({ type: 'reset' }))
     setSessionId(null)
@@ -441,11 +507,13 @@ function App() {
     setMessages([])
   }
 
+  /** Starts a new chat session from the sidebar. */
   const handleNewChat = () => {
     handleReset()
     setSidebarOpen(false)
   }
 
+  /** Resumes a previous session and loads its conversation history. */
   const handleSelectSession = async (session: Session) => {
     // Reset current session and set new session ID
     wsRef.current?.send(JSON.stringify({ type: 'resume', sessionId: session.id }))
@@ -475,6 +543,7 @@ function App() {
     }
   }
 
+  /** Returns the status indicator color based on connection state. */
   const getStatusColor = () => {
     switch (status) {
       case 'connected': return '#4ade80'
@@ -485,6 +554,7 @@ function App() {
     }
   }
 
+  /** Triggers server restart via REST API and handles page reload countdown. */
   const handleRestart = async () => {
     try {
       const apiUrl = `http://${window.location.hostname}:3001/restart`
@@ -518,6 +588,7 @@ function App() {
     }
   }
 
+  /** Formats a date string as a relative time (e.g., "5m ago", "2d ago"). */
   const formatDate = (dateStr: string) => {
     const date = new Date(dateStr)
     const now = new Date()
@@ -533,6 +604,7 @@ function App() {
     return date.toLocaleDateString()
   }
 
+  /** Formats a Date as HH:MM:SS for log timestamps. */
   const formatLogTime = (date: Date) => {
     return date.toLocaleTimeString('en-US', {
       hour12: false,
@@ -542,14 +614,17 @@ function App() {
     })
   }
 
+  /** Clears all server log messages from the logs tab. */
   const handleClearLogs = () => {
     setLogMessages([])
   }
 
+  /** Switches between terminal, logs, and webcams tabs. */
   const handleTabChange = useCallback((newTab: ActiveTab) => {
     setActiveTab(newTab)
   }, [])
 
+  /** Requests the list of available webcam devices from the server. */
   const requestWebcamList = useCallback(() => {
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
       setLoadingWebcams(true)
@@ -557,18 +632,21 @@ function App() {
     }
   }, [])
 
+  /** Starts streaming from a specific webcam device. */
   const startWebcam = useCallback((deviceId: string) => {
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
       webcamWsRef.current.send(JSON.stringify({ type: 'webcam-start', deviceId }))
     }
   }, [])
 
+  /** Stops streaming from a specific webcam device. */
   const stopWebcam = useCallback((deviceId: string) => {
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
       webcamWsRef.current.send(JSON.stringify({ type: 'webcam-stop', deviceId }))
     }
   }, [])
 
+  /** Toggles fullscreen mode for a webcam feed, with optional screen orientation lock. */
   const toggleFullscreenWebcam = useCallback((deviceId: string | null) => {
     setFullscreenWebcam(deviceId)
     // Try to lock screen orientation to landscape when entering fullscreen

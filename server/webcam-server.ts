@@ -1,12 +1,20 @@
+/**
+ * @fileoverview WebSocket server for webcam streaming.
+ *
+ * Runs on a separate port from the main server to isolate webcam traffic.
+ * Each client connection gets its own WebcamManager instance for independent
+ * device control and streaming.
+ */
+
 import { WebSocketServer, WebSocket } from 'ws';
 import { WebcamManager } from './webcam-manager.js';
 
 const WEBCAM_PORT = process.env.WEBCAM_PORT || 3002;
 
-// Create WebSocket server for webcam streaming
+/** WebSocket server for webcam streaming connections. */
 const wss = new WebSocketServer({ port: Number(WEBCAM_PORT), host: '0.0.0.0' });
 
-// Store webcam managers per connection
+/** Maps each WebSocket connection to its WebcamManager instance. */
 const webcamManagers = new Map<WebSocket, WebcamManager>();
 
 console.log(`Webcam server running on port ${WEBCAM_PORT}`);

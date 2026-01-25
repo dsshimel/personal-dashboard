@@ -1,29 +1,63 @@
+/**
+ * @fileoverview Webcam streaming manager using FFmpeg.
+ *
+ * Provides webcam device enumeration and MJPEG streaming via FFmpeg.
+ * Designed for Windows DirectShow devices, streams frames as base64 JPEG.
+ */
+
 import { EventEmitter } from 'events';
 
+/** Represents a webcam device detected by FFmpeg. */
 export interface WebcamDevice {
+  /** Device identifier (device name on Windows DirectShow). */
   id: string;
+  /** Human-readable device name. */
   name: string;
+  /** Device type (only 'video' devices are used). */
   type: 'video' | 'audio';
 }
 
+/** Tracks an active FFmpeg streaming process. */
 interface FFmpegProcess {
+  /** The Bun subprocess handle. */
   process: ReturnType<typeof Bun.spawn>;
+  /** Device ID this process is streaming from. */
   deviceId: string;
 }
 
+/**
+ * Manages webcam device enumeration and MJPEG streaming via FFmpeg.
+ *
+ * Emits events for frames, stream lifecycle, and errors.
+ * Uses FFmpeg DirectShow on Windows to capture and encode MJPEG.
+ */
 export class WebcamManager extends EventEmitter {
+  /** Map of device ID to active FFmpeg process. */
   private activeStreams: Map<string, FFmpegProcess> = new Map();
+  /** Target frame rate for streaming. */
   private frameRate: number;
+  /** JPEG quality (2-31, lower is better quality). */
   private quality: number;
 
+  /**
+   * Creates a new WebcamManager.
+   *
+   * @param frameRate - Target FPS for streaming. Defaults to 15.
+   * @param quality - JPEG quality (2-31, lower is better). Defaults to 5.
+   */
   constructor(frameRate = 15, quality = 5) {
     super();
     this.frameRate = frameRate;
-    this.quality = quality; // JPEG quality (2-31, lower is better)
+    this.quality = quality;
   }
 
   /**
-   * List available webcam devices using FFmpeg
+   * Lists available webcam devices using FFmpeg DirectShow.
+   *
+   * Parses FFmpeg's device enumeration output to extract video devices.
+   * Only returns video devices, not audio.
+   *
+   * @returns Array of detected webcam devices.
    */
   async listDevices(): Promise<WebcamDevice[]> {
     const devices: WebcamDevice[] = [];
@@ -75,7 +109,13 @@ export class WebcamManager extends EventEmitter {
   }
 
   /**
-   * Start streaming from a webcam device
+   * Starts MJPEG streaming from a webcam device.
+   *
+   * Spawns FFmpeg to capture from the device and output MJPEG to stdout.
+   * Emits 'frame' events with base64-encoded JPEG data.
+   *
+   * @param deviceId - The device ID (name) to stream from.
+   * @returns True if stream started successfully.
    */
   async startStream(deviceId: string): Promise<boolean> {
     if (this.activeStreams.has(deviceId)) {
@@ -127,7 +167,10 @@ export class WebcamManager extends EventEmitter {
   }
 
   /**
-   * Stop streaming from a webcam device
+   * Stops streaming from a webcam device.
+   *
+   * @param deviceId - The device ID to stop streaming.
+   * @returns True if stream was stopped, false if not streaming.
    */
   stopStream(deviceId: string): boolean {
     const stream = this.activeStreams.get(deviceId);
@@ -148,9 +191,7 @@ export class WebcamManager extends EventEmitter {
     }
   }
 
-  /**
-   * Stop all active streams
-   */
+  /** Stops all active webcam streams. */
   stopAllStreams(): void {
     for (const [deviceId] of this.activeStreams) {
       this.stopStream(deviceId);
@@ -158,21 +199,29 @@ export class WebcamManager extends EventEmitter {
   }
 
   /**
-   * Check if a device is currently streaming
+   * Checks if a device is currently streaming.
+   *
+   * @param deviceId - The device ID to check.
+   * @returns True if the device is streaming.
    */
   isStreaming(deviceId: string): boolean {
     return this.activeStreams.has(deviceId);
   }
 
   /**
-   * Get list of currently streaming device IDs
+   * Gets the list of currently streaming device IDs.
+   *
+   * @returns Array of device IDs that are currently streaming.
    */
   getActiveStreams(): string[] {
     return Array.from(this.activeStreams.keys());
   }
 
   /**
-   * Handle FFmpeg stderr output (progress/errors)
+   * Handles FFmpeg stderr output, emitting errors when detected.
+   *
+   * @param deviceId - The device this stream is for.
+   * @param stderr - The stderr ReadableStream from FFmpeg.
    */
   private async handleStderr(deviceId: string, stderr: ReadableStream<Uint8Array>): Promise<void> {
     const reader = stderr.getReader();
@@ -190,14 +239,19 @@ export class WebcamManager extends EventEmitter {
           this.emit('error', { deviceId, type: 'ffmpeg-error', error: text });
         }
       }
-    } catch (error) {
+    } catch {
       // Stream closed, ignore
     }
   }
 
   /**
-   * Handle MJPEG frame stream from FFmpeg stdout
-   * MJPEG frames start with 0xFFD8 (SOI) and end with 0xFFD9 (EOI)
+   * Parses MJPEG frame stream from FFmpeg stdout.
+   *
+   * MJPEG frames are delimited by SOI (0xFFD8) and EOI (0xFFD9) markers.
+   * Extracts complete frames and emits them as base64-encoded JPEG.
+   *
+   * @param deviceId - The device this stream is for.
+   * @param stdout - The stdout ReadableStream from FFmpeg.
    */
   private async handleFrameStream(deviceId: string, stdout: ReadableStream<Uint8Array>): Promise<void> {
     const reader = stdout.getReader();

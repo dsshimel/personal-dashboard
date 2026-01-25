@@ -1,3 +1,11 @@
+/**
+ * @fileoverview Main Express server with WebSocket support for Claude Code communication.
+ *
+ * Provides REST API endpoints for session management and WebSocket connections
+ * for real-time command execution and response streaming. Includes message
+ * buffering for client reconnection support.
+ */
+
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -8,36 +16,51 @@ import { homedir } from 'os';
 
 const PORT = process.env.PORT || 3001;
 const WORKING_DIR = process.env.WORKING_DIR || process.cwd();
-const MESSAGE_BUFFER_SIZE = 1000; // Keep last 1000 messages per session
+
+/** Maximum messages to buffer per session for reconnection support. */
+const MESSAGE_BUFFER_SIZE = 1000;
 
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
-// Store managers per connection
+/** Maps WebSocket connections to their ClaudeCodeManager instances. */
 const managers = new Map<WebSocket, ClaudeCodeManager>();
 
-// Store all connected WebSocket clients for log broadcasting
+/** All connected clients for broadcasting server logs. */
 const allClients = new Set<WebSocket>();
 
-// Message buffer for reconnection support
+/** Message stored in buffer for reconnection support. */
 interface BufferedMessage {
+  /** Sequential ID for ordering and sync. */
   id: number;
+  /** Message type (output, error, status, complete). */
   type: string;
+  /** Message content. */
   content: string;
+  /** ISO timestamp. */
   timestamp: string;
 }
 
-// Store messages per session for reconnection
+/** Buffered messages per session ID for reconnection. */
 const sessionMessages = new Map<string, BufferedMessage[]>();
+
+/** Global counter for message IDs. */
 let globalMessageId = 0;
 
-// Get next message ID
+/** Returns the next sequential message ID. */
 function getNextMessageId(): number {
   return ++globalMessageId;
 }
 
-// Buffer a message for a session
+/**
+ * Buffers a message for a session, maintaining a rolling window of MESSAGE_BUFFER_SIZE.
+ *
+ * @param sessionId - The session to buffer the message for.
+ * @param type - Message type.
+ * @param content - Message content.
+ * @returns The buffered message with assigned ID.
+ */
 function bufferMessage(sessionId: string, type: string, content: string): BufferedMessage {
   const message: BufferedMessage = {
     id: getNextMessageId(),
@@ -61,7 +84,13 @@ function bufferMessage(sessionId: string, type: string, content: string): Buffer
   return message;
 }
 
-// Get messages since a given ID for a session
+/**
+ * Retrieves buffered messages since a given ID for reconnection sync.
+ *
+ * @param sessionId - The session to get messages for.
+ * @param sinceId - Return messages with ID greater than this.
+ * @returns Array of buffered messages.
+ */
 function getMessagesSince(sessionId: string, sinceId: number): BufferedMessage[] {
   const messages = sessionMessages.get(sessionId);
   if (!messages) return [];
@@ -69,7 +98,12 @@ function getMessagesSince(sessionId: string, sinceId: number): BufferedMessage[]
   return messages.filter(m => m.id > sinceId);
 }
 
-// Broadcast log to all connected clients
+/**
+ * Broadcasts a log message to all connected WebSocket clients.
+ *
+ * @param level - Log severity level.
+ * @param message - Log message content.
+ */
 function broadcastLog(level: 'info' | 'warn' | 'error', message: string) {
   const logMessage = JSON.stringify({
     type: 'log',
@@ -85,7 +119,7 @@ function broadcastLog(level: 'info' | 'warn' | 'error', message: string) {
   }
 }
 
-// Intercept console methods to broadcast logs
+// Intercept console methods to broadcast logs to connected clients
 const originalConsoleLog = console.log;
 const originalConsoleWarn = console.warn;
 const originalConsoleError = console.error;
@@ -331,7 +365,7 @@ app.get('/sessions/:sessionId/messages', (req, res) => {
   });
 });
 
-// Track session ID per connection
+/** Maps WebSocket connections to their current session ID for message buffering. */
 const connectionSessions = new Map<WebSocket, string>();
 
 wss.on('connection', (ws) => {

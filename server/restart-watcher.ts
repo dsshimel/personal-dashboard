@@ -1,8 +1,9 @@
 /**
- * Restart Watcher Process
+ * @fileoverview Restart watcher process for graceful server restarts.
  *
- * This runs as a separate process that watches for a restart signal file.
- * When the signal is detected, it kills the main app and restarts it.
+ * Runs as a separate supervisor process that monitors for a restart signal file.
+ * When the signal is detected, it gracefully stops the app, kills processes
+ * on the required ports, and restarts everything.
  *
  * Usage: bun run server/restart-watcher.ts
  */
@@ -12,11 +13,17 @@ import { watch, unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
 
 const WORKING_DIR = process.cwd();
+/** Path to the signal file that triggers a restart. */
 const SIGNAL_FILE = join(WORKING_DIR, '.restart-signal');
 const isWindows = process.platform === 'win32';
 
+/** The currently running app process. */
 let appProcess: ReturnType<typeof spawn> | null = null;
 
+/**
+ * Kills any processes listening on the app's ports.
+ * Uses platform-specific commands (taskkill on Windows, fuser on Linux).
+ */
 function killProcessesOnPorts() {
   const ports = [3001, 3002, 5173];
   console.log(`[Watcher] Killing processes on ports ${ports.join(', ')}...`);
@@ -39,6 +46,7 @@ function killProcessesOnPorts() {
   }
 }
 
+/** Starts the app by running `bun run prod:all`. */
 function startApp() {
   console.log('[Watcher] Starting app with bun run prod:all...');
 
@@ -54,6 +62,7 @@ function startApp() {
   });
 }
 
+/** Handles restart by stopping current app, killing ports, and restarting. */
 function restart() {
   console.log('[Watcher] Restart signal received!');
 

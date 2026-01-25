@@ -1,47 +1,101 @@
+/**
+ * @fileoverview Claude Code CLI process manager.
+ *
+ * Manages spawning and communication with the Claude Code CLI, handling
+ * streaming JSON output, session management, and process lifecycle.
+ */
+
 import { EventEmitter } from 'events';
 
+/**
+ * Message format from Claude CLI's stream-json output.
+ * Different types indicate different stages of the conversation.
+ */
 export interface ClaudeMessage {
+  /** Message type from Claude CLI. */
   type: 'init' | 'assistant' | 'user' | 'result' | 'system' | 'error';
+  /** Session ID assigned by Claude CLI. */
   session_id?: string;
+  /** Message content with text blocks. */
   message?: {
     content?: Array<{ type: string; text?: string }>;
   };
+  /** Direct content for error messages. */
   content?: string;
+  /** Result text for result type messages. */
   result?: string;
+  /** Message subtype. */
   subtype?: string;
 }
 
+/**
+ * Event signatures emitted by ClaudeCodeManager.
+ */
 export interface ManagerEvents {
+  /** Emitted for output, error, status changes, and completion. */
   output: (data: { type: 'output' | 'error' | 'status' | 'complete'; content: string }) => void;
+  /** Emitted when a new session ID is assigned. */
   sessionId: (sessionId: string) => void;
+  /** Emitted on process errors. */
   error: (error: Error) => void;
 }
 
+/**
+ * Manages Claude Code CLI process spawning and communication.
+ *
+ * Handles stdin/stdout streaming, session management, and process lifecycle.
+ * Emits events for output, errors, and session changes.
+ */
 export class ClaudeCodeManager extends EventEmitter {
+  /** Current session ID for conversation continuity. */
   private sessionId: string | null = null;
+  /** Currently running Claude CLI process. */
   private currentProcess: ReturnType<typeof Bun.spawn> | null = null;
+  /** Directory where Claude CLI runs. */
   private workingDirectory: string;
+  /** Whether a command is currently being processed. */
   private isProcessing = false;
+  /** Whether the current process was intentionally aborted. */
   private wasAborted = false;
 
+  /**
+   * Creates a new ClaudeCodeManager.
+   *
+   * @param workingDirectory - Directory for Claude CLI execution. Defaults to cwd.
+   */
   constructor(workingDirectory?: string) {
     super();
     this.workingDirectory = workingDirectory || process.cwd();
   }
 
+  /** Returns the current session ID or null if no session. */
   getSessionId(): string | null {
     return this.sessionId;
   }
 
+  /**
+   * Sets the session ID for resuming a previous conversation.
+   *
+   * @param sessionId - The session ID to resume.
+   */
   setSessionId(sessionId: string): void {
     this.sessionId = sessionId;
     console.log('[ClaudeCode] Session ID set to:', sessionId);
   }
 
+  /** Returns true if a command is currently being processed. */
   isRunning(): boolean {
     return this.isProcessing;
   }
 
+  /**
+   * Sends a command to Claude CLI and streams the response.
+   *
+   * Handles slash commands locally, spawns Claude CLI for regular prompts.
+   * Emits 'output' events for responses and 'complete' when done.
+   *
+   * @param message - The user's prompt or slash command.
+   */
   async sendCommand(message: string): Promise<void> {
     console.log('[ClaudeCode] sendCommand called with:', message.substring(0, 100));
     console.log('[ClaudeCode] Current sessionId:', this.sessionId);
@@ -79,6 +133,12 @@ export class ClaudeCodeManager extends EventEmitter {
     }
   }
 
+  /**
+   * Builds command-line arguments for Claude CLI.
+   *
+   * @param message - The user's prompt.
+   * @returns Array of CLI arguments.
+   */
   private buildArgs(message: string): string[] {
     const args = [
       '-p', message,
@@ -94,6 +154,14 @@ export class ClaudeCodeManager extends EventEmitter {
     return args;
   }
 
+  /**
+   * Spawns Claude CLI process and streams output.
+   *
+   * Uses Bun.spawn for Windows compatibility. Reads stdout as streaming JSON
+   * and emits parsed messages as events.
+   *
+   * @param args - CLI arguments to pass to claude command.
+   */
   private async spawnClaude(args: string[]): Promise<void> {
     console.log('[ClaudeCode] Spawning claude with args:', args);
     console.log('[ClaudeCode] Working directory:', this.workingDirectory);
@@ -189,6 +257,11 @@ export class ClaudeCodeManager extends EventEmitter {
     this.wasAborted = false;
   }
 
+  /**
+   * Parses a JSON line from Claude CLI output and emits appropriate events.
+   *
+   * @param line - A single line of JSON output from Claude CLI.
+   */
   private handleJsonLine(line: string): void {
     try {
       const parsed: ClaudeMessage = JSON.parse(line);
@@ -232,6 +305,7 @@ export class ClaudeCodeManager extends EventEmitter {
     }
   }
 
+  /** Aborts the currently running Claude CLI process. */
   abort(): void {
     if (this.currentProcess) {
       this.wasAborted = true;
@@ -242,11 +316,17 @@ export class ClaudeCodeManager extends EventEmitter {
     }
   }
 
+  /** Resets the manager by aborting any process and clearing the session. */
   reset(): void {
     this.abort();
     this.sessionId = null;
   }
 
+  /**
+   * Handles slash commands locally without spawning Claude CLI.
+   *
+   * @param command - The slash command (e.g., "/help", "/reset").
+   */
   private handleSlashCommand(command: string): void {
     const cmd = command.toLowerCase().trim();
     console.log('[ClaudeCode] Handling slash command:', cmd);
