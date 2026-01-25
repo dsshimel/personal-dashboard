@@ -36,6 +36,8 @@ interface FFmpegProcess {
 export class WebcamManager extends EventEmitter {
   /** Map of device ID to active FFmpeg process. */
   private activeStreams: Map<string, FFmpegProcess> = new Map();
+  /** Set of device IDs currently changing resolution (don't emit stop for these). */
+  private changingResolution: Set<string> = new Set();
   /** Target frame rate for streaming. */
   private frameRate: number;
   /** JPEG quality (2-31, lower is better quality). */
@@ -156,6 +158,10 @@ export class WebcamManager extends EventEmitter {
       // Handle process exit
       proc.exited.then((code) => {
         console.log(`FFmpeg process exited for ${deviceId} with code ${code}`);
+        // Don't emit stream-stopped if we're just changing resolution
+        if (this.changingResolution.has(deviceId)) {
+          return;
+        }
         this.activeStreams.delete(deviceId);
         this.emit('stream-stopped', { deviceId, code });
       });
@@ -223,17 +229,23 @@ export class WebcamManager extends EventEmitter {
 
     console.log(`Changing resolution for ${deviceId} from ${stream.resolution} to ${resolution}`);
 
+    // Mark as changing resolution so we don't emit stream-stopped
+    this.changingResolution.add(deviceId);
+
     // Stop current stream without emitting stop event (we'll emit started with new resolution)
     try {
       stream.process.kill();
       this.activeStreams.delete(deviceId);
     } catch (error) {
+      this.changingResolution.delete(deviceId);
       console.error(`Error stopping stream for resolution change: ${error}`);
       return false;
     }
 
     // Start new stream with new resolution
-    return this.startStream(deviceId, resolution);
+    const result = await this.startStream(deviceId, resolution);
+    this.changingResolution.delete(deviceId);
+    return result;
   }
 
   /**
