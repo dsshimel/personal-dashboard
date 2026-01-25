@@ -716,9 +716,9 @@ function App() {
     }
   }, [])
 
-  /** Sets the resolution for a webcam stream. */
-  const setWebcamResolution = useCallback((deviceId: string, resolution: string) => {
-    console.log('[Webcam] setWebcamResolution called:', deviceId, resolution)
+  /** Sets the resolution and frame rate for a webcam stream. */
+  const setWebcamResolution = useCallback((deviceId: string, resolution: string, frameRate?: number) => {
+    console.log('[Webcam] setWebcamResolution called:', deviceId, resolution, frameRate ? `@ ${frameRate}fps` : '')
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
       console.log('[Webcam] Adding to changingResolution:', deviceId)
       // Update both state and ref (ref is used by websocket handler)
@@ -730,7 +730,7 @@ function App() {
         next.delete(deviceId)
         return next
       })
-      webcamWsRef.current.send(JSON.stringify({ type: 'webcam-resolution', deviceId, resolution }))
+      webcamWsRef.current.send(JSON.stringify({ type: 'webcam-resolution', deviceId, resolution, frameRate }))
     }
   }, [])
 
@@ -738,13 +738,13 @@ function App() {
   const toggleFullscreenWebcam = useCallback((deviceId: string | null, previousDeviceId?: string | null) => {
     setFullscreenWebcam(deviceId)
 
-    // Change resolution based on fullscreen state
+    // Change resolution and frame rate based on fullscreen state
     if (deviceId) {
-      // Entering fullscreen - request high resolution
-      setWebcamResolution(deviceId, '1920x1080')
+      // Entering fullscreen - request high resolution and higher frame rate
+      setWebcamResolution(deviceId, '1920x1080', 30)
     } else if (previousDeviceId) {
-      // Exiting fullscreen - request normal resolution
-      setWebcamResolution(previousDeviceId, '640x480')
+      // Exiting fullscreen - request normal resolution and frame rate
+      setWebcamResolution(previousDeviceId, '640x480', 15)
     }
 
     // Try to lock screen orientation to landscape when entering fullscreen
@@ -1059,7 +1059,7 @@ function App() {
         </div>
 
         {/* Fullscreen webcam overlay */}
-        {fullscreenWebcam && (webcamFrames.has(fullscreenWebcam) || changingResolution.has(fullscreenWebcam)) && (
+        {fullscreenWebcam && (
           <div className="webcam-fullscreen-overlay" onClick={() => toggleFullscreenWebcam(null, fullscreenWebcam)}>
             <div className="webcam-fullscreen-header">
               <span>{webcamDevices.find(d => d.id === fullscreenWebcam)?.name || fullscreenWebcam}</span>
@@ -1070,7 +1070,7 @@ function App() {
                 Exit Fullscreen
               </button>
             </div>
-            {changingResolution.has(fullscreenWebcam) ? (
+            {changingResolution.has(fullscreenWebcam) || !webcamFrames.has(fullscreenWebcam) ? (
               <div className="webcam-fullscreen-loading" onClick={(e) => e.stopPropagation()}>
                 <div className="webcam-loading-spinner"></div>
                 <span>Switching to HD...</span>

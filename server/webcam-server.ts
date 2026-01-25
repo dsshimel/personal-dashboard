@@ -88,8 +88,9 @@ wss.on('connection', (ws) => {
 
         case 'webcam-resolution':
           if (message.deviceId && typeof message.deviceId === 'string' && message.resolution) {
-            log(`[WebcamServer] Received resolution change request: ${message.deviceId} -> ${message.resolution}`);
-            await webcamManager.setResolution(message.deviceId, message.resolution);
+            const frameRate = typeof message.frameRate === 'number' ? message.frameRate : undefined;
+            log(`[WebcamServer] Received resolution change request: ${message.deviceId} -> ${message.resolution}${frameRate ? ` @ ${frameRate}fps` : ''}`);
+            await webcamManager.setResolution(message.deviceId, message.resolution, frameRate);
             log(`[WebcamServer] Resolution change completed for: ${message.deviceId}`);
           }
           break;

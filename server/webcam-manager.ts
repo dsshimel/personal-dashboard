@@ -32,6 +32,8 @@ interface FFmpegProcess {
   deviceId: string;
   /** Current resolution of the stream. */
   resolution: string;
+  /** Current frame rate of the stream. */
+  frameRate: number;
 }
 
 /**
@@ -127,23 +129,26 @@ export class WebcamManager extends EventEmitter {
    *
    * @param deviceId - The device ID (name) to stream from.
    * @param resolution - Resolution string (e.g., '640x480', '1920x1080'). Defaults to '640x480'.
+   * @param frameRate - Frame rate for streaming. Defaults to class frameRate (15).
    * @returns True if stream started successfully.
    */
-  async startStream(deviceId: string, resolution: string = '640x480'): Promise<boolean> {
+  async startStream(deviceId: string, resolution: string = '640x480', frameRate?: number): Promise<boolean> {
     if (this.activeStreams.has(deviceId)) {
       console.log(`Stream already active for device: ${deviceId}`);
       return true;
     }
 
+    const fps = frameRate ?? this.frameRate;
+
     try {
-      log(`[WebcamManager] Starting webcam stream for: ${deviceId} at ${resolution}`);
+      log(`[WebcamManager] Starting webcam stream for: ${deviceId} at ${resolution} @ ${fps}fps`);
 
       // FFmpeg command to capture from webcam and output MJPEG to stdout
       // -video_size must come BEFORE -i to set the capture resolution from the camera
       const args = [
         '-f', 'dshow',
         '-video_size', resolution,
-        '-framerate', String(this.frameRate),
+        '-framerate', String(fps),
         '-i', `video=${deviceId}`,
         '-f', 'mjpeg',
         '-q:v', String(this.quality),
@@ -157,7 +162,7 @@ export class WebcamManager extends EventEmitter {
         stderr: 'pipe',
       });
 
-      this.activeStreams.set(deviceId, { process: proc, deviceId, resolution });
+      this.activeStreams.set(deviceId, { process: proc, deviceId, resolution, frameRate: fps });
 
       // Handle stderr for logging (FFmpeg outputs progress to stderr)
       this.handleStderr(deviceId, proc.stderr);
@@ -222,26 +227,28 @@ export class WebcamManager extends EventEmitter {
   }
 
   /**
-   * Changes the resolution of an active stream.
-   * Stops the current stream and restarts it with the new resolution.
+   * Changes the resolution and/or frame rate of an active stream.
+   * Stops the current stream and restarts it with the new settings.
    *
-   * @param deviceId - The device ID to change resolution for.
+   * @param deviceId - The device ID to change settings for.
    * @param resolution - New resolution string (e.g., '1920x1080').
-   * @returns True if resolution change was initiated successfully.
+   * @param frameRate - New frame rate. Optional.
+   * @returns True if change was initiated successfully.
    */
-  async setResolution(deviceId: string, resolution: string): Promise<boolean> {
+  async setResolution(deviceId: string, resolution: string, frameRate?: number): Promise<boolean> {
     const stream = this.activeStreams.get(deviceId);
     if (!stream) {
       console.log(`No active stream for device: ${deviceId}`);
       return false;
     }
 
-    if (stream.resolution === resolution) {
-      console.log(`Stream already at ${resolution} for device: ${deviceId}`);
+    const newFrameRate = frameRate ?? stream.frameRate;
+    if (stream.resolution === resolution && stream.frameRate === newFrameRate) {
+      console.log(`Stream already at ${resolution} @ ${newFrameRate}fps for device: ${deviceId}`);
       return true;
     }
 
-    log(`[WebcamManager] Changing resolution for ${deviceId} from ${stream.resolution} to ${resolution}`);
+    log(`[WebcamManager] Changing settings for ${deviceId} from ${stream.resolution}@${stream.frameRate}fps to ${resolution}@${newFrameRate}fps`);
 
     // Mark as changing resolution so we don't emit stream-stopped
     this.changingResolution.add(deviceId);
@@ -264,9 +271,9 @@ export class WebcamManager extends EventEmitter {
       return false;
     }
 
-    // Start new stream with new resolution (keep changingResolution flag until stream starts)
-    log(`[WebcamManager] Starting new stream at ${resolution}`);
-    const result = await this.startStream(deviceId, resolution);
+    // Start new stream with new settings (keep changingResolution flag until stream starts)
+    log(`[WebcamManager] Starting new stream at ${resolution}@${newFrameRate}fps`);
+    const result = await this.startStream(deviceId, resolution, newFrameRate);
 
     // Now safe to clear the flag after new stream has started
     this.changingResolution.delete(deviceId);
