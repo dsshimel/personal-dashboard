@@ -455,6 +455,7 @@ function App() {
     localStorage.setItem('currentSessionId', session.id)
     setMessages([])
     setSidebarOpen(false)
+    setActiveTab('terminal')  // Switch to terminal tab when selecting a session
 
     // Fetch and restore conversation history
     try {
