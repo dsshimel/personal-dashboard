@@ -121,6 +121,7 @@ function App() {
   const webcamsContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
+  const webcamReconnectTimeoutRef = useRef<number | null>(null)
   const lastMessageIdRef = useRef<number>(0)
   const sessionIdRef = useRef<string | null>(null)
 
@@ -321,6 +322,12 @@ function App() {
    * Handles frame reception and device list updates.
    */
   const connectWebcam = useCallback(() => {
+    // Clear any pending reconnect timeout
+    if (webcamReconnectTimeoutRef.current) {
+      clearTimeout(webcamReconnectTimeoutRef.current)
+      webcamReconnectTimeoutRef.current = null
+    }
+
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) return
 
     const wsUrl = `ws://${window.location.hostname}:3002`
@@ -376,6 +383,11 @@ function App() {
       setWebcamConnected(false)
       setActiveWebcams(new Set())
       setWebcamFrames(new Map())
+
+      // Auto-reconnect after 3 seconds if on webcams tab
+      webcamReconnectTimeoutRef.current = window.setTimeout(() => {
+        connectWebcam()
+      }, 3000)
     }
 
     ws.onerror = (event) => {
@@ -679,6 +691,12 @@ function App() {
   useEffect(() => {
     if (activeTab === 'webcams') {
       connectWebcam()
+    }
+
+    return () => {
+      if (webcamReconnectTimeoutRef.current) {
+        clearTimeout(webcamReconnectTimeoutRef.current)
+      }
     }
   }, [activeTab, connectWebcam])
 
