@@ -28,7 +28,12 @@ describe('ClaudeCodeManager', () => {
     const buildArgs = (manager as unknown as { buildArgs: (msg: string) => string[] }).buildArgs.bind(manager);
     const args = buildArgs('hello world');
 
-    expect(args).toEqual(['-p', 'hello world', '--output-format', 'stream-json']);
+    expect(args).toEqual([
+      '-p', 'hello world',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--allowedTools', 'Read,Edit,Write,Bash,Glob,Grep,WebSearch,WebFetch'
+    ]);
   });
 
   test('builds args with session ID for subsequent commands', () => {
@@ -38,7 +43,13 @@ describe('ClaudeCodeManager', () => {
     const buildArgs = (manager as unknown as { buildArgs: (msg: string) => string[] }).buildArgs.bind(manager);
     const args = buildArgs('follow up');
 
-    expect(args).toEqual(['--resume', 'test-session-123', '-p', 'follow up', '--output-format', 'stream-json']);
+    expect(args).toEqual([
+      '--resume', 'test-session-123',
+      '-p', 'follow up',
+      '--output-format', 'stream-json',
+      '--verbose',
+      '--allowedTools', 'Read,Edit,Write,Bash,Glob,Grep,WebSearch,WebFetch'
+    ]);
   });
 
   test('handleJsonLine parses init message and extracts session ID', () => {
@@ -87,7 +98,8 @@ describe('ClaudeCodeManager', () => {
     });
   });
 
-  test('handleJsonLine parses result message', () => {
+  test('handleJsonLine parses result message without emitting output', () => {
+    // Result messages are logged but don't emit output (to avoid duplication with assistant messages)
     const handleJsonLine = (manager as unknown as { handleJsonLine: (line: string) => void }).handleJsonLine.bind(manager);
 
     let capturedOutput: { type: string; content: string } | null = null;
@@ -99,15 +111,14 @@ describe('ClaudeCodeManager', () => {
 
     const resultMessage = JSON.stringify({
       type: 'result',
-      result: 'Task completed successfully'
+      result: 'Task completed successfully',
+      total_cost_usd: 0.001
     });
 
     handleJsonLine(resultMessage);
 
-    expect(capturedOutput).toEqual({
-      type: 'output',
-      content: 'Task completed successfully'
-    });
+    // Result messages are intentionally not emitted as output to avoid duplication
+    expect(capturedOutput).toBeNull();
   });
 
   test('handleJsonLine parses error message', () => {
