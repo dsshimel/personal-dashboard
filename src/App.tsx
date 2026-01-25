@@ -115,6 +115,7 @@ function App() {
   const [fullscreenWebcam, setFullscreenWebcam] = useState<string | null>(null)
   const [startingWebcams, setStartingWebcams] = useState<Set<string>>(new Set())
   const [stoppingWebcams, setStoppingWebcams] = useState<Set<string>>(new Set())
+  const [changingResolution, setChangingResolution] = useState<Set<string>>(new Set())
 
   // Refs for mutable values that shouldn't trigger re-renders
   const isRestartingRef = useRef(false)
@@ -365,6 +366,11 @@ function App() {
           case 'webcam-started':
             setActiveWebcams(prev => new Set(prev).add(data.deviceId))
             setStartingWebcams(prev => {
+              const next = new Set(prev)
+              next.delete(data.deviceId)
+              return next
+            })
+            setChangingResolution(prev => {
               const next = new Set(prev)
               next.delete(data.deviceId)
               return next
@@ -704,6 +710,7 @@ function App() {
   /** Sets the resolution for a webcam stream. */
   const setWebcamResolution = useCallback((deviceId: string, resolution: string) => {
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
+      setChangingResolution(prev => new Set(prev).add(deviceId))
       webcamWsRef.current.send(JSON.stringify({ type: 'webcam-resolution', deviceId, resolution }))
     }
   }, [])
@@ -1031,7 +1038,7 @@ function App() {
         </div>
 
         {/* Fullscreen webcam overlay */}
-        {fullscreenWebcam && webcamFrames.has(fullscreenWebcam) && (
+        {fullscreenWebcam && (webcamFrames.has(fullscreenWebcam) || changingResolution.has(fullscreenWebcam)) && (
           <div className="webcam-fullscreen-overlay" onClick={() => toggleFullscreenWebcam(null, fullscreenWebcam)}>
             <div className="webcam-fullscreen-header">
               <span>{webcamDevices.find(d => d.id === fullscreenWebcam)?.name || fullscreenWebcam}</span>
@@ -1042,12 +1049,19 @@ function App() {
                 Exit Fullscreen
               </button>
             </div>
-            <img
-              src={`data:image/jpeg;base64,${webcamFrames.get(fullscreenWebcam)}`}
-              alt={`Webcam feed: ${fullscreenWebcam}`}
-              className="webcam-fullscreen-video"
-              onClick={(e) => e.stopPropagation()}
-            />
+            {changingResolution.has(fullscreenWebcam) ? (
+              <div className="webcam-fullscreen-loading" onClick={(e) => e.stopPropagation()}>
+                <div className="webcam-loading-spinner"></div>
+                <span>Switching to HD...</span>
+              </div>
+            ) : (
+              <img
+                src={`data:image/jpeg;base64,${webcamFrames.get(fullscreenWebcam)}`}
+                alt={`Webcam feed: ${fullscreenWebcam}`}
+                className="webcam-fullscreen-video"
+                onClick={(e) => e.stopPropagation()}
+              />
+            )}
           </div>
         )}
 
