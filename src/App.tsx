@@ -128,6 +128,7 @@ function App() {
   const reconnectTimeoutRef = useRef<number | null>(null)
   const webcamReconnectTimeoutRef = useRef<number | null>(null)
   const previousActiveWebcamsRef = useRef<Set<string>>(new Set())
+  const changingResolutionRef = useRef<Set<string>>(new Set())
   const lastMessageIdRef = useRef<number>(0)
   const sessionIdRef = useRef<string | null>(null)
 
@@ -361,16 +362,24 @@ function App() {
             setLoadingWebcams(false)
             break
           case 'webcam-frame':
+            // Skip frames while resolution is changing to avoid showing wrong aspect ratio
+            if (changingResolutionRef.current.has(data.deviceId)) {
+              break
+            }
             setWebcamFrames(prev => new Map(prev).set(data.deviceId, data.data))
             break
           case 'webcam-started':
+            console.log('[Webcam] Received webcam-started for:', data.deviceId)
             setActiveWebcams(prev => new Set(prev).add(data.deviceId))
             setStartingWebcams(prev => {
               const next = new Set(prev)
               next.delete(data.deviceId)
               return next
             })
+            // Clear both ref and state
+            changingResolutionRef.current.delete(data.deviceId)
             setChangingResolution(prev => {
+              console.log('[Webcam] Clearing changingResolution for:', data.deviceId, 'prev:', Array.from(prev))
               const next = new Set(prev)
               next.delete(data.deviceId)
               return next
@@ -709,8 +718,18 @@ function App() {
 
   /** Sets the resolution for a webcam stream. */
   const setWebcamResolution = useCallback((deviceId: string, resolution: string) => {
+    console.log('[Webcam] setWebcamResolution called:', deviceId, resolution)
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
+      console.log('[Webcam] Adding to changingResolution:', deviceId)
+      // Update both state and ref (ref is used by websocket handler)
+      changingResolutionRef.current.add(deviceId)
       setChangingResolution(prev => new Set(prev).add(deviceId))
+      // Clear old frames so they don't display with wrong aspect ratio during transition
+      setWebcamFrames(prev => {
+        const next = new Map(prev)
+        next.delete(deviceId)
+        return next
+      })
       webcamWsRef.current.send(JSON.stringify({ type: 'webcam-resolution', deviceId, resolution }))
     }
   }, [])
@@ -1021,7 +1040,9 @@ function App() {
                       </div>
                     </div>
                     <div className="webcam-video-container" onClick={() => toggleFullscreenWebcam(deviceId)}>
-                      {webcamFrames.has(deviceId) ? (
+                      {changingResolution.has(deviceId) ? (
+                        <div className="webcam-loading">Switching resolution...</div>
+                      ) : webcamFrames.has(deviceId) ? (
                         <img
                           src={`data:image/jpeg;base64,${webcamFrames.get(deviceId)}`}
                           alt={`Webcam feed: ${deviceId}`}

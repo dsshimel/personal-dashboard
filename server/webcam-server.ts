@@ -8,6 +8,13 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import { WebcamManager } from './webcam-manager.js';
+import { appendFileSync } from 'fs';
+
+const log = (msg: string) => {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  console.log(msg);
+  try { appendFileSync('logs.txt', line); } catch {}
+};
 
 const WEBCAM_PORT = process.env.WEBCAM_PORT || 3002;
 
@@ -81,7 +88,9 @@ wss.on('connection', (ws) => {
 
         case 'webcam-resolution':
           if (message.deviceId && typeof message.deviceId === 'string' && message.resolution) {
+            log(`[WebcamServer] Received resolution change request: ${message.deviceId} -> ${message.resolution}`);
             await webcamManager.setResolution(message.deviceId, message.resolution);
+            log(`[WebcamServer] Resolution change completed for: ${message.deviceId}`);
           }
           break;
 

@@ -6,6 +6,13 @@
  */
 
 import { EventEmitter } from 'events';
+import { appendFileSync } from 'fs';
+
+const log = (msg: string) => {
+  const line = `[${new Date().toISOString()}] ${msg}\n`;
+  console.log(msg);
+  try { appendFileSync('logs.txt', line); } catch {}
+};
 
 /** Represents a webcam device detected by FFmpeg. */
 export interface WebcamDevice {
@@ -129,18 +136,21 @@ export class WebcamManager extends EventEmitter {
     }
 
     try {
-      console.log(`Starting webcam stream for: ${deviceId} at ${resolution}`);
+      log(`[WebcamManager] Starting webcam stream for: ${deviceId} at ${resolution}`);
 
       // FFmpeg command to capture from webcam and output MJPEG to stdout
+      // -video_size must come BEFORE -i to set the capture resolution from the camera
       const args = [
         '-f', 'dshow',
+        '-video_size', resolution,
+        '-framerate', String(this.frameRate),
         '-i', `video=${deviceId}`,
         '-f', 'mjpeg',
         '-q:v', String(this.quality),
-        '-r', String(this.frameRate),
-        '-s', resolution,
         '-',
       ];
+
+      log(`[WebcamManager] FFmpeg args: ffmpeg ${args.join(' ')}`);
 
       const proc = Bun.spawn(['ffmpeg', ...args], {
         stdout: 'pipe',
@@ -157,11 +167,15 @@ export class WebcamManager extends EventEmitter {
 
       // Handle process exit
       proc.exited.then((code) => {
-        console.log(`FFmpeg process exited for ${deviceId} with code ${code}`);
+        log(`[WebcamManager] FFmpeg process exited for ${deviceId} with code ${code}`);
+        log(`[WebcamManager] changingResolution set: ${JSON.stringify(Array.from(this.changingResolution))}`);
+        log(`[WebcamManager] Is changing resolution: ${this.changingResolution.has(deviceId)}`);
         // Don't emit stream-stopped if we're just changing resolution
         if (this.changingResolution.has(deviceId)) {
+          log(`[WebcamManager] Skipping stream-stopped emit for ${deviceId} (resolution change)`);
           return;
         }
+        log(`[WebcamManager] Emitting stream-stopped for ${deviceId}`);
         this.activeStreams.delete(deviceId);
         this.emit('stream-stopped', { deviceId, code });
       });
@@ -227,24 +241,36 @@ export class WebcamManager extends EventEmitter {
       return true;
     }
 
-    console.log(`Changing resolution for ${deviceId} from ${stream.resolution} to ${resolution}`);
+    log(`[WebcamManager] Changing resolution for ${deviceId} from ${stream.resolution} to ${resolution}`);
 
     // Mark as changing resolution so we don't emit stream-stopped
     this.changingResolution.add(deviceId);
+    log(`[WebcamManager] Added ${deviceId} to changingResolution: ${JSON.stringify(Array.from(this.changingResolution))}`);
 
-    // Stop current stream without emitting stop event (we'll emit started with new resolution)
+    // Stop current stream and wait for it to exit
     try {
+      log(`[WebcamManager] Killing FFmpeg process for ${deviceId}`);
+      const oldProcess = stream.process;
       stream.process.kill();
       this.activeStreams.delete(deviceId);
+
+      // Wait for the old process to actually exit before starting new one
+      log(`[WebcamManager] Waiting for old process to exit`);
+      await oldProcess.exited;
+      log(`[WebcamManager] Old process exited, starting new stream`);
     } catch (error) {
       this.changingResolution.delete(deviceId);
       console.error(`Error stopping stream for resolution change: ${error}`);
       return false;
     }
 
-    // Start new stream with new resolution
+    // Start new stream with new resolution (keep changingResolution flag until stream starts)
+    log(`[WebcamManager] Starting new stream at ${resolution}`);
     const result = await this.startStream(deviceId, resolution);
+
+    // Now safe to clear the flag after new stream has started
     this.changingResolution.delete(deviceId);
+    log(`[WebcamManager] Removed ${deviceId} from changingResolution, result: ${result}`);
     return result;
   }
 
@@ -283,15 +309,36 @@ export class WebcamManager extends EventEmitter {
         if (done) break;
 
         const text = decoder.decode(value);
-        // Only log errors, not progress
+
+        // Log all FFmpeg stderr for debugging - it contains resolution info
+        log(`[FFmpeg stderr ${deviceId}] ${text.trim()}`);
+
+        // Emit errors
         if (text.includes('Error') || text.includes('error') || text.includes('Invalid')) {
-          console.error(`[FFmpeg ${deviceId}] ${text}`);
           this.emit('error', { deviceId, type: 'ffmpeg-error', error: text });
         }
       }
     } catch {
       // Stream closed, ignore
     }
+  }
+
+  /**
+   * Parses JPEG dimensions from the frame data.
+   * Looks for SOF0 marker (0xFFC0) which contains width/height.
+   */
+  private parseJpegDimensions(data: Uint8Array): { width: number; height: number } | null {
+    // Look for SOF0 marker (0xFF 0xC0) or SOF2 (0xFF 0xC2)
+    for (let i = 0; i < data.length - 9; i++) {
+      if (data[i] === 0xFF && (data[i + 1] === 0xC0 || data[i + 1] === 0xC2)) {
+        // SOF format: FF C0 LL LL PP HH HH WW WW
+        // LL LL = length, PP = precision, HH HH = height, WW WW = width
+        const height = (data[i + 5] << 8) | data[i + 6];
+        const width = (data[i + 7] << 8) | data[i + 8];
+        return { width, height };
+      }
+    }
+    return null;
   }
 
   /**
@@ -358,6 +405,15 @@ export class WebcamManager extends EventEmitter {
           // Extract the complete JPEG frame
           const frame = buffer.slice(soiIndex, eoiIndex);
           buffer = buffer.slice(eoiIndex);
+
+          // Parse JPEG dimensions from SOF0 marker for debugging
+          const dims = this.parseJpegDimensions(frame);
+          if (dims) {
+            // Only log occasionally to avoid spam (every 30 frames ~= 2 seconds)
+            if (Math.random() < 0.03) {
+              log(`[WebcamManager] Frame for ${deviceId}: ${dims.width}x${dims.height}, size=${frame.length} bytes`);
+            }
+          }
 
           // Convert to base64 and emit
           const base64 = btoa(String.fromCharCode(...frame));
