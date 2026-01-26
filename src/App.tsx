@@ -83,7 +83,31 @@ interface WebcamDevice {
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 
 /** Currently active UI tab. */
-type ActiveTab = 'terminal' | 'logs' | 'webcams' | 'projects'
+type Section = 'terminal' | 'hardware' | 'diagnostics'
+type TerminalTab = 'terminal' | 'projects' | 'conversations'
+type HardwareTab = 'webcams'
+type DiagnosticsTab = 'logs'
+type SubTab = TerminalTab | HardwareTab | DiagnosticsTab
+
+const SECTION_TABS: Record<Section, SubTab[]> = {
+  terminal: ['terminal', 'projects', 'conversations'],
+  hardware: ['webcams'],
+  diagnostics: ['logs'],
+}
+
+const SUB_TAB_LABELS: Record<SubTab, string> = {
+  terminal: 'Terminal',
+  projects: 'Projects',
+  conversations: 'Conversations',
+  webcams: 'Webcams',
+  logs: 'Server Logs',
+}
+
+const SECTION_LABELS: Record<Section, string> = {
+  terminal: 'Terminal',
+  hardware: 'Hardware',
+  diagnostics: 'Diagnostics',
+}
 
 /** Message stored in server buffer for reconnection support. */
 interface BufferedMessage {
@@ -119,7 +143,8 @@ function App() {
   const [loadingSessions, setLoadingSessions] = useState(false)
 
   // UI state
-  const [activeTab, setActiveTab] = useState<ActiveTab>('terminal')
+  const [activeSection, setActiveSection] = useState<Section>('terminal')
+  const [activeSubTab, setActiveSubTab] = useState<SubTab>('terminal')
   const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
   const [showScrollButton, setShowScrollButton] = useState(false)
   const [showLogsScrollButton, setShowLogsScrollButton] = useState(false)
@@ -604,7 +629,7 @@ function App() {
       addMessage('status', `Switched to project: ${project.name} (new conversation)`)
     }
 
-    setActiveTab('terminal')
+    setActiveSubTab('terminal')
   }, [addMessage])
 
   /** Deactivates the current project so new conversations aren't associated with any project. */
@@ -621,7 +646,7 @@ function App() {
 
     wsRef.current?.send(JSON.stringify({ type: 'reset' }))
     addMessage('status', 'Project deactivated — new conversations will not be associated with any project')
-    setActiveTab('terminal')
+    setActiveSubTab('terminal')
   }, [addMessage])
 
   // Keep activeProjectRef in sync with state for use in callbacks
@@ -640,12 +665,12 @@ function App() {
     }
   }, [connect])
 
-  // Fetch sessions when sidebar opens
+  // Fetch sessions when conversations tab is active
   useEffect(() => {
-    if (sidebarOpen) {
+    if (activeSubTab === 'conversations') {
       fetchSessions()
     }
-  }, [sidebarOpen, fetchSessions])
+  }, [activeSubTab, fetchSessions])
 
   // Fetch projects on mount and restore active project from localStorage
   useEffect(() => {
@@ -671,17 +696,17 @@ function App() {
 
   // Fetch projects and conversations when projects tab is active
   useEffect(() => {
-    if (activeTab === 'projects') {
+    if (activeSubTab === 'projects') {
       fetchProjects()
     }
-  }, [activeTab, fetchProjects])
+  }, [activeSubTab, fetchProjects])
 
   // Fetch conversations when active project changes and projects tab is open
   useEffect(() => {
-    if (activeProject && activeTab === 'projects') {
+    if (activeProject && activeSubTab === 'projects') {
       fetchProjectConversations(activeProject.id)
     }
-  }, [activeProject, activeTab, fetchProjectConversations])
+  }, [activeProject, activeSubTab, fetchProjectConversations])
 
   // Index of the message that should get the gold "ready" highlight.
   // Prefer the last output message; fall back to the last non-status message.
@@ -812,7 +837,7 @@ function App() {
     localStorage.setItem('currentSessionId', session.id)
     setMessages([])
     setSidebarOpen(false)
-    setActiveTab('terminal')  // Switch to terminal tab when selecting a session
+    setActiveSubTab('terminal')  // Switch to terminal tab when selecting a session
 
     // Fetch and restore conversation history
     try {
@@ -913,9 +938,16 @@ function App() {
     setLogMessages([])
   }
 
-  /** Switches between terminal, logs, and webcams tabs. */
-  const handleTabChange = useCallback((newTab: ActiveTab) => {
-    setActiveTab(newTab)
+  /** Switches between sections (Terminal, Hardware, Diagnostics). */
+  const handleSectionChange = useCallback((section: Section) => {
+    setActiveSection(section)
+    setActiveSubTab(SECTION_TABS[section][0])
+    setSidebarOpen(false)
+  }, [])
+
+  /** Switches between sub-tabs within the current section. */
+  const handleSubTabChange = useCallback((tab: SubTab) => {
+    setActiveSubTab(tab)
   }, [])
 
   /** Requests the list of available webcam devices from the server. */
@@ -1062,7 +1094,7 @@ function App() {
 
   // Connect to webcam server and fetch list when webcams tab is activated
   useEffect(() => {
-    if (activeTab === 'webcams') {
+    if (activeSubTab === 'webcams') {
       connectWebcam()
     }
 
@@ -1071,14 +1103,14 @@ function App() {
         clearTimeout(webcamReconnectTimeoutRef.current)
       }
     }
-  }, [activeTab, connectWebcam])
+  }, [activeSubTab, connectWebcam])
 
   // Fetch webcam list when connected to webcam server
   useEffect(() => {
-    if (activeTab === 'webcams' && webcamConnected) {
+    if (activeSubTab === 'webcams' && webcamConnected) {
       requestWebcamList()
     }
-  }, [activeTab, webcamConnected, requestWebcamList])
+  }, [activeSubTab, webcamConnected, requestWebcamList])
 
   // Restore previously active webcams after reconnection
   useEffect(() => {
@@ -1097,40 +1129,38 @@ function App() {
 
   return (
     <div className="app-container">
-      {/* Sidebar */}
+      {/* Sidebar — section navigation */}
       <div className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
-          <h2>Conversations</h2>
+          <h2>Dashboard</h2>
           <button className="close-sidebar" onClick={() => setSidebarOpen(false)}>
             &times;
           </button>
         </div>
-        {activeProject && (
-          <div className="sidebar-project-badge">
-            {activeProject.name}
-          </div>
-        )}
-        <button className="new-chat-button" onClick={handleNewChat}>
-          + New Conversation
-        </button>
-        <div className="sessions-list">
-          {loadingSessions ? (
-            <div className="loading-sessions">Loading...</div>
-          ) : sessions.length === 0 ? (
-            <div className="no-sessions">No previous conversations</div>
-          ) : (
-            sessions.map(session => (
-              <button
-                key={session.id}
-                className={`session-item ${sessionId === session.id ? 'active' : ''}`}
-                onClick={() => handleSelectSession(session)}
-              >
-                <div className="session-name">{session.name}</div>
-                <div className="session-uuid">({session.id})</div>
-                <div className="session-meta">{formatDate(session.lastModified)}</div>
-              </button>
-            ))
-          )}
+        <nav className="section-nav">
+          {(Object.keys(SECTION_LABELS) as Section[]).map(section => (
+            <button
+              key={section}
+              className={`section-nav-item ${activeSection === section ? 'active' : ''}`}
+              onClick={() => handleSectionChange(section)}
+            >
+              {SECTION_LABELS[section]}
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-footer">
+          <button
+            onClick={() => { handleRestart(); setSidebarOpen(false) }}
+            className="restart-button"
+            title="Restart server"
+            disabled={status === 'restarting'}
+          >
+            {restartCountdown !== null
+              ? `Refreshing in ${restartCountdown}...`
+              : status === 'restarting'
+                ? 'Restarting...'
+                : 'Restart Server'}
+          </button>
         </div>
       </div>
 
@@ -1147,28 +1177,14 @@ function App() {
               <span></span>
             </button>
             <span className="terminal-dot" style={{ backgroundColor: getStatusColor() }} />
-            {activeTab === 'terminal' ? (activeProject ? `${activeProject.name} — Terminal` : 'Claude Code Terminal')
-              : activeTab === 'projects' ? 'Projects'
-              : activeTab === 'webcams' ? 'Webcams'
-              : 'Server Logs'}
+            {activeSubTab === 'terminal' ? (activeProject ? `${activeProject.name} — Terminal` : 'Claude Code Terminal')
+              : SECTION_TABS[activeSection].length === 1
+                ? SECTION_LABELS[activeSection]
+                : `${SECTION_LABELS[activeSection]} — ${SUB_TAB_LABELS[activeSubTab]}`}
           </div>
           <div className="terminal-controls">
-            {activeTab === 'terminal' && sessionId && <span className="session-id">{sessionId.slice(0, 8)}...</span>}
-            {activeTab === 'terminal' && (
-              <button
-                onClick={handleRestart}
-                className="reset-button"
-                title="Restart server"
-                disabled={status === 'restarting'}
-              >
-                {restartCountdown !== null
-                  ? `Refreshing in ${restartCountdown}...`
-                  : status === 'restarting'
-                    ? 'Restarting...'
-                    : 'Restart'}
-              </button>
-            )}
-            {activeTab === 'logs' && (
+            {activeSubTab === 'terminal' && sessionId && <span className="session-id">{sessionId.slice(0, 8)}...</span>}
+            {activeSubTab === 'logs' && (
               <>
                 <select
                   className="log-level-select"
@@ -1188,40 +1204,26 @@ function App() {
           </div>
         </div>
 
-        {/* Tab bar */}
+        {/* Tab bar — sub-tabs for active section */}
         <div className="tab-bar">
-          <button
-            className={`tab ${activeTab === 'terminal' ? 'active' : ''}`}
-            onClick={() => handleTabChange('terminal')}
-          >
-            Terminal
-          </button>
-          <button
-            className={`tab ${activeTab === 'logs' ? 'active' : ''}`}
-            onClick={() => handleTabChange('logs')}
-          >
-            Server Logs
-            {filteredLogMessages.length > 0 && <span className="tab-badge">{filteredLogMessages.length}</span>}
-          </button>
-          <button
-            className={`tab ${activeTab === 'webcams' ? 'active' : ''}`}
-            onClick={() => handleTabChange('webcams')}
-          >
-            Webcams
-            {activeWebcams.size > 0 && <span className="tab-badge">{activeWebcams.size}</span>}
-          </button>
-          <button
-            className={`tab ${activeTab === 'projects' ? 'active' : ''}`}
-            onClick={() => handleTabChange('projects')}
-          >
-            Projects
-            {projects.length > 0 && <span className="tab-badge">{projects.length}</span>}
-          </button>
+          {SECTION_TABS[activeSection].map(tab => (
+            <button
+              key={tab}
+              className={`tab ${activeSubTab === tab ? 'active' : ''}`}
+              onClick={() => handleSubTabChange(tab)}
+            >
+              {SUB_TAB_LABELS[tab]}
+              {tab === 'conversations' && sessions.length > 0 && <span className="tab-badge">{sessions.length}</span>}
+              {tab === 'webcams' && activeWebcams.size > 0 && <span className="tab-badge">{activeWebcams.size}</span>}
+              {tab === 'logs' && filteredLogMessages.length > 0 && <span className="tab-badge">{filteredLogMessages.length}</span>}
+              {tab === 'projects' && projects.length > 0 && <span className="tab-badge">{projects.length}</span>}
+            </button>
+          ))}
         </div>
 
         {/* Terminal output - always mounted, hidden when inactive */}
         <div
-          className={`terminal-output ${activeTab !== 'terminal' ? 'tab-hidden' : ''}`}
+          className={`terminal-output ${activeSubTab !== 'terminal' ? 'tab-hidden' : ''}`}
           ref={outputRef}
           onScroll={handleTerminalScroll}
         >
@@ -1253,7 +1255,7 @@ function App() {
         </div>
 
         {/* Scroll to bottom button */}
-        {activeTab === 'terminal' && showScrollButton && (
+        {activeSubTab === 'terminal' && showScrollButton && (
           <button
             className="scroll-to-bottom-button"
             onClick={scrollToBottom}
@@ -1264,7 +1266,7 @@ function App() {
         )}
 
         {/* Logs output - always mounted, hidden when inactive */}
-        <div className={`logs-output ${activeTab !== 'logs' ? 'tab-hidden' : ''}`} ref={logsOutputRef} onScroll={handleLogsScroll}>
+        <div className={`logs-output ${activeSubTab !== 'logs' ? 'tab-hidden' : ''}`} ref={logsOutputRef} onScroll={handleLogsScroll}>
           {filteredLogMessages.length === 0 && (
             <div className="welcome-message">
               {logMessages.length === 0
@@ -1283,7 +1285,7 @@ function App() {
         </div>
 
         {/* Scroll to bottom button for logs */}
-        {activeTab === 'logs' && showLogsScrollButton && (
+        {activeSubTab === 'logs' && showLogsScrollButton && (
           <button
             className="scroll-to-bottom-button bottom-corner"
             onClick={scrollLogsToBottom}
@@ -1294,7 +1296,7 @@ function App() {
         )}
 
         {/* Webcams output - always mounted, hidden when inactive */}
-        <div className={`webcams-container ${activeTab !== 'webcams' ? 'tab-hidden' : ''}`} ref={webcamsContainerRef}>
+        <div className={`webcams-container ${activeSubTab !== 'webcams' ? 'tab-hidden' : ''}`} ref={webcamsContainerRef}>
             <div className="webcams-header">
               <h3>Available Webcams</h3>
               <button
@@ -1383,7 +1385,7 @@ function App() {
         </div>
 
         {/* Projects tab - always mounted, hidden when inactive */}
-        <div className={`projects-container ${activeTab !== 'projects' ? 'tab-hidden' : ''}`}>
+        <div className={`projects-container ${activeSubTab !== 'projects' ? 'tab-hidden' : ''}`}>
           <div className="projects-add-form">
             <h3>Add Project</h3>
             <div className="projects-add-row">
@@ -1497,6 +1499,46 @@ function App() {
           )}
         </div>
 
+        {/* Conversations - always mounted, hidden when inactive */}
+        <div className={`conversations-container ${activeSubTab !== 'conversations' ? 'tab-hidden' : ''}`}>
+          {activeProject && (
+            <div className="conversations-project-badge">
+              Project: <strong>{activeProject.name}</strong>
+            </div>
+          )}
+          <div className="conversations-header">
+            <h3>Conversations</h3>
+            <button className="new-chat-button" onClick={handleNewChat}>
+              + New Conversation
+            </button>
+          </div>
+          {loadingSessions && sessions.length === 0 ? (
+            <div className="welcome-message">Loading conversations...</div>
+          ) : sessions.length === 0 ? (
+            <div className="welcome-message">
+              No conversations yet.
+              <br />
+              Start a conversation from the Terminal tab.
+            </div>
+          ) : (
+            <div className="conversations-list">
+              {sessions.map(session => (
+                <button
+                  key={session.id}
+                  className={`session-item ${sessionId === session.id ? 'active' : ''}`}
+                  onClick={() => handleSelectSession(session)}
+                >
+                  <div className="session-name">{session.name}</div>
+                  <div className="session-meta">
+                    <span className="session-uuid">{session.id.slice(0, 8)}...</span>
+                    <span className="session-date">{formatDate(session.lastModified)}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Fullscreen webcam overlay */}
         {fullscreenWebcam && (
           <div ref={fullscreenOverlayRef} className="webcam-fullscreen-overlay" onClick={() => toggleFullscreenWebcam(null, fullscreenWebcam)}>
@@ -1526,7 +1568,7 @@ function App() {
         )}
 
         {/* Input container - only show on terminal tab */}
-        {activeTab === 'terminal' && (
+        {activeSubTab === 'terminal' && (
           <div className="terminal-input-container">
             <span className="input-prompt">&gt;</span>
             <textarea
