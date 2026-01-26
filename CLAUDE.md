@@ -7,6 +7,7 @@ Web terminal interface for Claude Code CLI with webcam streaming support.
 ```bash
 bun run dev:all      # Development (frontend + backend servers)
 bun run prod:all     # Production build and serve
+bun run prod:watch   # Production build with restart watcher
 bun run server       # Backend only (port 3001)
 bun run webcam       # Webcam server only (port 3002)
 bun test tests/server/  # Run server tests
