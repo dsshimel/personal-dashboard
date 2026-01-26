@@ -5,7 +5,7 @@
  * Uses mocked WebcamManager to avoid actual FFmpeg operations.
  */
 
-import { describe, test, expect, beforeEach, mock } from 'bun:test';
+import { describe, test, expect, beforeEach } from 'bun:test';
 import { EventEmitter } from 'events';
 import { MockWebSocket } from './test-utils';
 
@@ -20,20 +20,19 @@ class MockWebcamManager extends EventEmitter {
   streamStarted = false;
   streamStopped = false;
   lastStartDeviceId: string | null = null;
-  lastStartResolution: string | null = null;
+  lastStartMode: string | null = null;
   lastStopDeviceId: string | null = null;
-  lastResolutionDeviceId: string | null = null;
-  lastResolution: string | null = null;
-  lastFrameRate: number | undefined = undefined;
+  lastOutputModeDeviceId: string | null = null;
+  lastOutputMode: string | null = null;
 
   async listDevices() {
     return this.devices;
   }
 
-  async startStream(deviceId: string, resolution: string = '640x480') {
+  async startStream(deviceId: string, outputMode: string = 'grid') {
     this.streamStarted = true;
     this.lastStartDeviceId = deviceId;
-    this.lastStartResolution = resolution;
+    this.lastStartMode = outputMode;
     this.emit('stream-started', { deviceId });
     return true;
   }
@@ -49,10 +48,9 @@ class MockWebcamManager extends EventEmitter {
     this.streamStopped = true;
   }
 
-  async setResolution(deviceId: string, resolution: string, frameRate?: number) {
-    this.lastResolutionDeviceId = deviceId;
-    this.lastResolution = resolution;
-    this.lastFrameRate = frameRate;
+  async setOutputMode(deviceId: string, outputMode: string) {
+    this.lastOutputModeDeviceId = deviceId;
+    this.lastOutputMode = outputMode;
     return true;
   }
 }
@@ -64,7 +62,7 @@ describe('Webcam Server Message Handlers', () => {
   /**
    * Simulates the message handler logic from webcam-server.ts
    */
-  async function handleMessage(message: { type: string; deviceId?: string; resolution?: string; frameRate?: number }) {
+  async function handleMessage(message: { type: string; deviceId?: string; mode?: string }) {
     switch (message.type) {
       case 'webcam-list': {
         const devices = await webcamManager.listDevices();
@@ -74,8 +72,8 @@ describe('Webcam Server Message Handlers', () => {
 
       case 'webcam-start':
         if (message.deviceId && typeof message.deviceId === 'string') {
-          const resolution = message.resolution || '640x480';
-          await webcamManager.startStream(message.deviceId, resolution);
+          const mode = message.mode || 'grid';
+          await webcamManager.startStream(message.deviceId, mode);
         }
         break;
 
@@ -85,10 +83,9 @@ describe('Webcam Server Message Handlers', () => {
         }
         break;
 
-      case 'webcam-resolution':
-        if (message.deviceId && typeof message.deviceId === 'string' && message.resolution) {
-          const frameRate = typeof message.frameRate === 'number' ? message.frameRate : undefined;
-          await webcamManager.setResolution(message.deviceId, message.resolution, frameRate);
+      case 'webcam-mode':
+        if (message.deviceId && typeof message.deviceId === 'string' && message.mode) {
+          await webcamManager.setOutputMode(message.deviceId, message.mode);
         }
         break;
 
@@ -131,16 +128,16 @@ describe('Webcam Server Message Handlers', () => {
       expect(webcamManager.lastStartDeviceId).toBe('Integrated Webcam');
     });
 
-    test('uses default resolution when not specified', async () => {
+    test('uses default grid mode when not specified', async () => {
       await handleMessage({ type: 'webcam-start', deviceId: 'Integrated Webcam' });
 
-      expect(webcamManager.lastStartResolution).toBe('640x480');
+      expect(webcamManager.lastStartMode).toBe('grid');
     });
 
-    test('uses custom resolution when specified', async () => {
-      await handleMessage({ type: 'webcam-start', deviceId: 'Integrated Webcam', resolution: '1920x1080' });
+    test('uses custom mode when specified', async () => {
+      await handleMessage({ type: 'webcam-start', deviceId: 'Integrated Webcam', mode: 'fullscreen' });
 
-      expect(webcamManager.lastStartResolution).toBe('1920x1080');
+      expect(webcamManager.lastStartMode).toBe('fullscreen');
     });
 
     test('ignores missing deviceId', async () => {
@@ -177,60 +174,44 @@ describe('Webcam Server Message Handlers', () => {
     });
   });
 
-  describe('webcam-resolution message', () => {
-    test('changes resolution for device', async () => {
+  describe('webcam-mode message', () => {
+    test('changes output mode for device', async () => {
       await handleMessage({
-        type: 'webcam-resolution',
+        type: 'webcam-mode',
         deviceId: 'Integrated Webcam',
-        resolution: '1280x720'
+        mode: 'fullscreen'
       });
 
-      expect(webcamManager.lastResolutionDeviceId).toBe('Integrated Webcam');
-      expect(webcamManager.lastResolution).toBe('1280x720');
+      expect(webcamManager.lastOutputModeDeviceId).toBe('Integrated Webcam');
+      expect(webcamManager.lastOutputMode).toBe('fullscreen');
     });
 
-    test('passes frame rate when specified', async () => {
+    test('sets grid mode', async () => {
       await handleMessage({
-        type: 'webcam-resolution',
+        type: 'webcam-mode',
         deviceId: 'Integrated Webcam',
-        resolution: '1920x1080',
-        frameRate: 30
+        mode: 'grid'
       });
 
-      expect(webcamManager.lastFrameRate).toBe(30);
-    });
-
-    test('passes undefined frame rate when not specified', async () => {
-      await handleMessage({
-        type: 'webcam-resolution',
-        deviceId: 'Integrated Webcam',
-        resolution: '1280x720'
-      });
-
-      expect(webcamManager.lastFrameRate).toBeUndefined();
+      expect(webcamManager.lastOutputMode).toBe('grid');
     });
 
     test('ignores missing deviceId', async () => {
-      await handleMessage({ type: 'webcam-resolution', resolution: '1280x720' });
+      await handleMessage({ type: 'webcam-mode', mode: 'fullscreen' });
 
-      expect(webcamManager.lastResolutionDeviceId).toBeNull();
+      expect(webcamManager.lastOutputModeDeviceId).toBeNull();
     });
 
-    test('ignores missing resolution', async () => {
-      await handleMessage({ type: 'webcam-resolution', deviceId: 'Integrated Webcam' });
+    test('ignores missing mode', async () => {
+      await handleMessage({ type: 'webcam-mode', deviceId: 'Integrated Webcam' });
 
-      expect(webcamManager.lastResolution).toBeNull();
+      expect(webcamManager.lastOutputMode).toBeNull();
     });
 
-    test('ignores non-number frame rate', async () => {
-      await handleMessage({
-        type: 'webcam-resolution',
-        deviceId: 'Integrated Webcam',
-        resolution: '1280x720',
-        frameRate: 'thirty' as unknown as number
-      });
+    test('ignores non-string deviceId', async () => {
+      await handleMessage({ type: 'webcam-mode', deviceId: 123 as unknown as string, mode: 'fullscreen' });
 
-      expect(webcamManager.lastFrameRate).toBeUndefined();
+      expect(webcamManager.lastOutputModeDeviceId).toBeNull();
     });
   });
 

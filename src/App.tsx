@@ -436,6 +436,9 @@ function App() {
           case 'webcam-error':
             console.error('[Webcam]', data.error)
             break
+          case 'webcam-log':
+            addLogMessage(data.level, `[Webcam] ${data.content}`, data.timestamp)
+            break
         }
       } catch {
         // Ignore parse errors
@@ -464,7 +467,7 @@ function App() {
     ws.onerror = (event) => {
       console.error('[Webcam WS] Error:', event)
     }
-  }, [])
+  }, [addLogMessage])
 
   /** Fetches available sessions from the REST API for the sidebar. */
   const fetchSessions = useCallback(async () => {
@@ -962,9 +965,9 @@ function App() {
     }
   }, [])
 
-  /** Sets the resolution and frame rate for a webcam stream. */
-  const setWebcamResolution = useCallback((deviceId: string, resolution: string, frameRate?: number) => {
-    console.log('[Webcam] setWebcamResolution called:', deviceId, resolution, frameRate ? `@ ${frameRate}fps` : '')
+  /** Sets the output mode (grid/fullscreen) for a webcam stream. */
+  const setWebcamMode = useCallback((deviceId: string, mode: 'grid' | 'fullscreen') => {
+    console.log('[Webcam] setWebcamMode called:', deviceId, mode)
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) {
       console.log('[Webcam] Adding to changingResolution:', deviceId)
       // Update both state and ref (ref is used by websocket handler)
@@ -976,7 +979,7 @@ function App() {
         next.delete(deviceId)
         return next
       })
-      webcamWsRef.current.send(JSON.stringify({ type: 'webcam-resolution', deviceId, resolution, frameRate }))
+      webcamWsRef.current.send(JSON.stringify({ type: 'webcam-mode', deviceId, mode }))
     }
   }, [])
 
@@ -984,10 +987,10 @@ function App() {
   const toggleFullscreenWebcam = useCallback((deviceId: string | null, previousDeviceId?: string | null) => {
     setFullscreenWebcam(deviceId)
 
-    // Change resolution and frame rate based on fullscreen state
+    // Change output mode based on fullscreen state
     if (deviceId) {
-      // Entering fullscreen - request high resolution and higher frame rate
-      setWebcamResolution(deviceId, '1920x1080', 30)
+      // Entering fullscreen - switch to native resolution pass-through
+      setWebcamMode(deviceId, 'fullscreen')
 
       // Request browser fullscreen after a short delay to ensure the overlay is rendered
       setTimeout(() => {
@@ -998,8 +1001,8 @@ function App() {
         }
       }, 50)
     } else if (previousDeviceId) {
-      // Exiting fullscreen - request normal resolution and frame rate
-      setWebcamResolution(previousDeviceId, '640x480', 15)
+      // Exiting fullscreen - switch back to grid downscale
+      setWebcamMode(previousDeviceId, 'grid')
 
       // Exit browser fullscreen if active
       if (document.fullscreenElement) {
@@ -1022,7 +1025,7 @@ function App() {
     } else if (!deviceId && orientation?.unlock) {
       orientation.unlock()
     }
-  }, [setWebcamResolution])
+  }, [setWebcamMode])
 
   // Handle escape key and browser fullscreen change to exit fullscreen
   useEffect(() => {
@@ -1487,7 +1490,7 @@ function App() {
             {changingResolution.has(fullscreenWebcam) || !webcamFrames.has(fullscreenWebcam) ? (
               <div className="webcam-fullscreen-loading" onClick={(e) => e.stopPropagation()}>
                 <div className="webcam-loading-spinner"></div>
-                <span>Switching to HD...</span>
+                <span>Switching to fullscreen...</span>
               </div>
             ) : (
               <img

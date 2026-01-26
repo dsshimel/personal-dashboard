@@ -12,12 +12,50 @@ import { logToFile, initLogger } from './file-logger.js';
 
 initLogger('webcam');
 
+/** Broadcasts a log message to all connected webcam WebSocket clients. */
+function broadcastLog(level: 'info' | 'warn' | 'error', message: string) {
+  logToFile(level, message);
+
+  const logMessage = JSON.stringify({
+    type: 'webcam-log',
+    level,
+    content: message,
+    timestamp: new Date().toISOString()
+  });
+
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(logMessage);
+    }
+  }
+}
+
 const log = (msg: string) => {
   console.log(msg);
-  logToFile('info', msg);
+  broadcastLog('info', msg);
 };
 
 const WEBCAM_PORT = process.env.WEBCAM_PORT || 3002;
+
+// Intercept console methods to broadcast logs to connected webcam clients
+const originalConsoleLog = console.log;
+const originalConsoleWarn = console.warn;
+const originalConsoleError = console.error;
+
+console.log = (...args: unknown[]) => {
+  originalConsoleLog(...args);
+  broadcastLog('info', args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' '));
+};
+
+console.warn = (...args: unknown[]) => {
+  originalConsoleWarn(...args);
+  broadcastLog('warn', args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' '));
+};
+
+console.error = (...args: unknown[]) => {
+  originalConsoleError(...args);
+  broadcastLog('error', args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' '));
+};
 
 /** WebSocket server for webcam streaming connections. */
 const wss = new WebSocketServer({ port: Number(WEBCAM_PORT), host: '0.0.0.0' });
@@ -76,8 +114,8 @@ wss.on('connection', (ws) => {
 
         case 'webcam-start':
           if (message.deviceId && typeof message.deviceId === 'string') {
-            const resolution = message.resolution || '640x480';
-            await webcamManager.startStream(message.deviceId, resolution);
+            const mode = message.mode || 'grid';
+            await webcamManager.startStream(message.deviceId, mode);
           }
           break;
 
@@ -87,12 +125,11 @@ wss.on('connection', (ws) => {
           }
           break;
 
-        case 'webcam-resolution':
-          if (message.deviceId && typeof message.deviceId === 'string' && message.resolution) {
-            const frameRate = typeof message.frameRate === 'number' ? message.frameRate : undefined;
-            log(`[WebcamServer] Received resolution change request: ${message.deviceId} -> ${message.resolution}${frameRate ? ` @ ${frameRate}fps` : ''}`);
-            await webcamManager.setResolution(message.deviceId, message.resolution, frameRate);
-            log(`[WebcamServer] Resolution change completed for: ${message.deviceId}`);
+        case 'webcam-mode':
+          if (message.deviceId && typeof message.deviceId === 'string' && message.mode) {
+            log(`[WebcamServer] Received mode change request: ${message.deviceId} -> ${message.mode}`);
+            await webcamManager.setOutputMode(message.deviceId, message.mode);
+            log(`[WebcamServer] Mode change completed for: ${message.deviceId}`);
           }
           break;
 

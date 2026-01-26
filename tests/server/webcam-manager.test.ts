@@ -7,10 +7,38 @@
 
 import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { WebcamManager } from '../../server/webcam-manager';
+import type { DeviceMode } from '../../server/webcam-manager';
 import { createMockJpegFrame, captureEvents, encodeString } from './test-utils';
 
 // Store original Bun.spawn
 const originalBunSpawn = Bun.spawn;
+
+/** Creates a mock Bun.spawn that returns a fake FFmpeg process. */
+function createMockSpawn(opts?: { captureArgs?: boolean; stderrText?: string }) {
+  let capturedArgs: string[] = [];
+  const fn = mock((args: string[]) => {
+    if (opts?.captureArgs) capturedArgs = args;
+    return {
+      pid: 12345,
+      stdout: new ReadableStream({ start(c) { c.close(); } }),
+      stderr: new ReadableStream({
+        start(c) {
+          if (opts?.stderrText) c.enqueue(encodeString(opts.stderrText));
+          c.close();
+        }
+      }),
+      exited: new Promise<number>((resolve) => setTimeout(() => resolve(0), 50))
+    };
+  });
+  return { fn, getCapturedArgs: () => capturedArgs };
+}
+
+/** Installs a mock Bun.spawn globally and returns it. */
+function installMockSpawn(opts?: Parameters<typeof createMockSpawn>[0]) {
+  const mock = createMockSpawn(opts);
+  (globalThis as { Bun: typeof Bun }).Bun.spawn = mock.fn as typeof Bun.spawn;
+  return mock;
+}
 
 describe('WebcamManager', () => {
   let manager: WebcamManager;
@@ -26,16 +54,13 @@ describe('WebcamManager', () => {
   });
 
   describe('Constructor', () => {
-    test('creates manager with default frame rate and quality', () => {
+    test('creates manager with default quality', () => {
       const m = new WebcamManager();
-      // Access private properties for testing
-      expect((m as unknown as { frameRate: number }).frameRate).toBe(15);
       expect((m as unknown as { quality: number }).quality).toBe(5);
     });
 
-    test('creates manager with custom frame rate and quality', () => {
-      const m = new WebcamManager(30, 10);
-      expect((m as unknown as { frameRate: number }).frameRate).toBe(30);
+    test('creates manager with custom quality', () => {
+      const m = new WebcamManager(10);
       expect((m as unknown as { quality: number }).quality).toBe(10);
     });
   });
@@ -46,12 +71,14 @@ describe('WebcamManager', () => {
     });
 
     test('returns true when stream is active', () => {
-      // Manually add to activeStreams with full mock object
       const activeStreams = (manager as unknown as { activeStreams: Map<string, unknown> }).activeStreams;
       activeStreams.set('test-device', {
         process: { kill: mock(() => {}) },
         deviceId: 'test-device',
-        resolution: '640x480',
+        inputResolution: '1280x720',
+        inputFrameRate: 30,
+        outputMode: 'grid',
+        resolution: '640x360',
         frameRate: 15
       });
 
@@ -69,14 +96,20 @@ describe('WebcamManager', () => {
       activeStreams.set('device-1', {
         process: { kill: mock(() => {}) },
         deviceId: 'device-1',
-        resolution: '640x480',
+        inputResolution: '1280x720',
+        inputFrameRate: 30,
+        outputMode: 'grid',
+        resolution: '640x360',
         frameRate: 15
       });
       activeStreams.set('device-2', {
         process: { kill: mock(() => {}) },
         deviceId: 'device-2',
-        resolution: '640x480',
-        frameRate: 15
+        inputResolution: '1280x720',
+        inputFrameRate: 30,
+        outputMode: 'fullscreen',
+        resolution: '1280x720',
+        frameRate: 30
       });
 
       const result = manager.getActiveStreams();
@@ -98,7 +131,10 @@ describe('WebcamManager', () => {
       activeStreams.set('test-device', {
         process: { kill: killMock },
         deviceId: 'test-device',
-        resolution: '640x480',
+        inputResolution: '1280x720',
+        inputFrameRate: 30,
+        outputMode: 'grid',
+        resolution: '640x360',
         frameRate: 15
       });
 
@@ -123,12 +159,18 @@ describe('WebcamManager', () => {
       activeStreams.set('device-1', {
         process: { kill: killMock1 },
         deviceId: 'device-1',
-        resolution: '640x480',
+        inputResolution: '1280x720',
+        inputFrameRate: 30,
+        outputMode: 'grid',
+        resolution: '640x360',
         frameRate: 15
       });
       activeStreams.set('device-2', {
         process: { kill: killMock2 },
         deviceId: 'device-2',
+        inputResolution: '1280x720',
+        inputFrameRate: 30,
+        outputMode: 'fullscreen',
         resolution: '1280x720',
         frameRate: 30
       });
@@ -197,10 +239,60 @@ describe('WebcamManager', () => {
     });
   });
 
+  describe('selectNativeMode', () => {
+    let selectNativeMode: (capabilities: DeviceMode[]) => { width: number; height: number; fps: number } | null;
+
+    beforeEach(() => {
+      selectNativeMode = (manager as unknown as {
+        selectNativeMode: (capabilities: DeviceMode[]) => { width: number; height: number; fps: number } | null
+      }).selectNativeMode.bind(manager);
+    });
+
+    test('returns null for empty capabilities', () => {
+      expect(selectNativeMode([])).toBeNull();
+    });
+
+    test('prefers MJPEG over raw pixel format', () => {
+      const caps: DeviceMode[] = [
+        { pixelFormat: 'yuyv422', width: 1920, height: 1080, maxFps: 10 },
+        { pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 },
+      ];
+      const result = selectNativeMode(caps);
+      expect(result).toEqual({ width: 1280, height: 720, fps: 30 });
+    });
+
+    test('selects highest resolution among MJPEG modes', () => {
+      const caps: DeviceMode[] = [
+        { pixelFormat: 'mjpeg', width: 640, height: 480, maxFps: 30 },
+        { pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 },
+        { pixelFormat: 'mjpeg', width: 960, height: 540, maxFps: 30 },
+      ];
+      const result = selectNativeMode(caps);
+      expect(result).toEqual({ width: 1280, height: 720, fps: 30 });
+    });
+
+    test('selects highest fps when resolutions are equal', () => {
+      const caps: DeviceMode[] = [
+        { pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 15 },
+        { pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 },
+      ];
+      const result = selectNativeMode(caps);
+      expect(result).toEqual({ width: 1280, height: 720, fps: 30 });
+    });
+
+    test('falls back to raw formats when no MJPEG modes', () => {
+      const caps: DeviceMode[] = [
+        { pixelFormat: 'yuyv422', width: 640, height: 480, maxFps: 30 },
+        { pixelFormat: 'yuyv422', width: 320, height: 240, maxFps: 30 },
+      ];
+      const result = selectNativeMode(caps);
+      expect(result).toEqual({ width: 640, height: 480, fps: 30 });
+    });
+  });
+
   describe('listDevices', () => {
     test('parses video devices from FFmpeg output', async () => {
-      // Mock Bun.spawn to return fake FFmpeg device list output
-      const mockStderr = `
+      const mockDeviceListStderr = `
 [dshow @ 00000123] DirectShow video devices
 [dshow @ 00000123]  "Integrated Webcam" (video)
 [dshow @ 00000123]     Alternative name "@device_pnp_\\\\?\\usb#vid_123"
@@ -208,30 +300,42 @@ describe('WebcamManager', () => {
 [dshow @ 00000123] DirectShow audio devices
 [dshow @ 00000123]  "Microphone" (audio)
 `;
+      const mockCapabilitiesStderr = `
+[dshow @ 00000456] DirectShow video device options (from video pin)
+[dshow @ 00000456]   vcodec=mjpeg  min s=1280x720 fps=5 max s=1280x720 fps=30
+[dshow @ 00000456]   vcodec=mjpeg  min s=640x480 fps=5 max s=640x480 fps=30
+`;
 
-      let exitedResolve: (code: number) => void;
-      const mockSpawn = mock(() => ({
-        stdout: new ReadableStream(),
-        stderr: new ReadableStream({
-          start(controller) {
-            controller.enqueue(encodeString(mockStderr));
-            controller.close();
-          }
-        }),
-        exited: new Promise<number>((resolve) => {
-          exitedResolve = resolve;
-          setTimeout(() => resolve(1), 10); // FFmpeg exits with 1 when listing
-        })
-      }));
+      let callCount = 0;
+      const mockSpawn = mock(() => {
+        callCount++;
+        // First call: device enumeration. Subsequent calls: capability queries.
+        const stderr = callCount === 1 ? mockDeviceListStderr : mockCapabilitiesStderr;
+        return {
+          stdout: new ReadableStream(),
+          stderr: new ReadableStream({
+            start(controller) {
+              controller.enqueue(encodeString(stderr));
+              controller.close();
+            }
+          }),
+          exited: Promise.resolve(1)
+        };
+      });
 
       (globalThis as { Bun: typeof Bun }).Bun.spawn = mockSpawn as typeof Bun.spawn;
 
       const devices = await manager.listDevices();
 
-      expect(mockSpawn).toHaveBeenCalled();
+      // 1 for device list + 2 for capability queries (one per video device)
+      expect(callCount).toBe(3);
       expect(devices.length).toBe(2);
-      expect(devices[0]).toEqual({ id: 'Integrated Webcam', name: 'Integrated Webcam', type: 'video' });
-      expect(devices[1]).toEqual({ id: 'USB Camera', name: 'USB Camera', type: 'video' });
+      expect(devices[0].id).toBe('Integrated Webcam');
+      expect(devices[0].name).toBe('Integrated Webcam');
+      expect(devices[0].type).toBe('video');
+      expect(devices[0].capabilities).toBeDefined();
+      expect(devices[0].capabilities!.length).toBe(2);
+      expect(devices[0].nativeMode).toEqual({ width: 1280, height: 720, fps: 30 });
     });
 
     test('returns empty array when no devices found', async () => {
@@ -267,6 +371,37 @@ describe('WebcamManager', () => {
       expect(events.length).toBe(1);
       expect(events[0].type).toBe('list-error');
     });
+
+    test('uses cached capabilities on second call', async () => {
+      const mockCapStderr = `
+[dshow @ 00000456]   vcodec=mjpeg  min s=640x480 fps=5 max s=640x480 fps=30
+`;
+      let callCount = 0;
+      const mockSpawn = mock(() => {
+        callCount++;
+        const stderr = callCount === 1
+          ? '[dshow @ 00000123]  "Test Cam" (video)\n'
+          : mockCapStderr;
+        return {
+          stdout: new ReadableStream(),
+          stderr: new ReadableStream({
+            start(c) { c.enqueue(encodeString(stderr)); c.close(); }
+          }),
+          exited: Promise.resolve(1)
+        };
+      });
+
+      (globalThis as { Bun: typeof Bun }).Bun.spawn = mockSpawn as typeof Bun.spawn;
+
+      await manager.listDevices(); // First call: 1 list + 1 capability = 2 spawns
+      const firstCount = callCount;
+
+      await manager.listDevices(); // Second call: 1 list + 0 capability (cached) = 1 spawn
+      const secondCount = callCount - firstCount;
+
+      expect(firstCount).toBe(2);
+      expect(secondCount).toBe(1); // Only device list, capabilities cached
+    });
   });
 
   describe('startStream', () => {
@@ -278,56 +413,91 @@ describe('WebcamManager', () => {
       expect(result).toBe(true);
     });
 
-    test('spawns FFmpeg with correct arguments', async () => {
-      let capturedArgs: string[] = [];
-
-      const mockSpawn = mock((args: string[]) => {
-        capturedArgs = args;
-        return {
-          pid: 12345,
-          stdout: new ReadableStream({
-            start(controller) {
-              controller.close();
-            }
-          }),
-          stderr: new ReadableStream({
-            start(controller) {
-              controller.close();
-            }
-          }),
-          exited: new Promise<number>((resolve) => {
-            setTimeout(() => resolve(0), 50);
-          })
-        };
+    test('spawns FFmpeg with native resolution and grid mode output filter', async () => {
+      // Pre-populate device capabilities
+      const caps = (manager as unknown as { deviceCapabilities: Map<string, unknown> }).deviceCapabilities;
+      caps.set('My Webcam', {
+        capabilities: [{ pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 }],
+        nativeMode: { width: 1280, height: 720, fps: 30 }
       });
 
-      (globalThis as { Bun: typeof Bun }).Bun.spawn = mockSpawn as typeof Bun.spawn;
+      const { fn, getCapturedArgs } = installMockSpawn({ captureArgs: true });
 
-      const result = await manager.startStream('My Webcam', '1280x720', 30);
+      const result = await manager.startStream('My Webcam', 'grid');
 
       expect(result).toBe(true);
-      expect(mockSpawn).toHaveBeenCalled();
-      expect(capturedArgs).toContain('ffmpeg');
-      expect(capturedArgs).toContain('-f');
-      expect(capturedArgs).toContain('dshow');
-      expect(capturedArgs).toContain('-video_size');
-      expect(capturedArgs).toContain('1280x720');
-      expect(capturedArgs).toContain('-framerate');
-      expect(capturedArgs).toContain('30');
-      expect(capturedArgs).toContain('video=My Webcam');
-      expect(capturedArgs).toContain('-f');
-      expect(capturedArgs).toContain('mjpeg');
+      expect(fn).toHaveBeenCalled();
+      const args = getCapturedArgs();
+      // Input should be native resolution
+      expect(args).toContain('-video_size');
+      expect(args).toContain('1280x720');
+      expect(args).toContain('video=My Webcam');
+      // Grid mode should have scale filter (half native: 1280/2=640, 720/2=360)
+      expect(args).toContain('-vf');
+      expect(args).toContain('scale=640:360');
+      expect(args).toContain('-r');
+      expect(args).toContain('15');
+      expect(args).toContain('mjpeg');
+    });
+
+    test('spawns FFmpeg in fullscreen mode without scale filter', async () => {
+      const caps = (manager as unknown as { deviceCapabilities: Map<string, unknown> }).deviceCapabilities;
+      caps.set('My Webcam', {
+        capabilities: [{ pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 }],
+        nativeMode: { width: 1280, height: 720, fps: 30 }
+      });
+
+      const { fn, getCapturedArgs } = installMockSpawn({ captureArgs: true });
+
+      const result = await manager.startStream('My Webcam', 'fullscreen');
+
+      expect(result).toBe(true);
+      const args = getCapturedArgs();
+      // Input should be native resolution
+      expect(args).toContain('1280x720');
+      // Fullscreen mode should NOT have scale filter
+      expect(args).not.toContain('-vf');
+      // Frame rate should be native
+      expect(args).toContain('-r');
+      expect(args).toContain('30');
+    });
+
+    test('applies half-resolution scale filter for small camera in grid mode', async () => {
+      const caps = (manager as unknown as { deviceCapabilities: Map<string, unknown> }).deviceCapabilities;
+      caps.set('Small Cam', {
+        capabilities: [{ pixelFormat: 'mjpeg', width: 640, height: 480, maxFps: 30 }],
+        nativeMode: { width: 640, height: 480, fps: 30 }
+      });
+
+      const { getCapturedArgs } = installMockSpawn({ captureArgs: true });
+
+      await manager.startStream('Small Cam', 'grid');
+
+      const args = getCapturedArgs();
+      // Half of 640x480 = 320x240
+      expect(args).toContain('-vf');
+      expect(args).toContain('scale=320:240');
+      expect(args).toContain('-r');
+      expect(args).toContain('15');
+    });
+
+    test('uses fallback resolution when no capabilities cached', async () => {
+      // Don't populate deviceCapabilities
+      const { getCapturedArgs } = installMockSpawn({ captureArgs: true });
+
+      await manager.startStream('Unknown Cam');
+
+      const args = getCapturedArgs();
+      // Fallback: 640x480 input, half = 320x240 for grid
+      expect(args).toContain('640x480');
+      expect(args).toContain('-vf');
+      expect(args).toContain('scale=320:240');
+      expect(args).toContain('-r');
+      expect(args).toContain('15');
     });
 
     test('emits stream-started event', async () => {
-      const mockSpawn = mock(() => ({
-        pid: 12345,
-        stdout: new ReadableStream({ start(c) { c.close(); } }),
-        stderr: new ReadableStream({ start(c) { c.close(); } }),
-        exited: new Promise<number>((resolve) => setTimeout(() => resolve(0), 50))
-      }));
-
-      (globalThis as { Bun: typeof Bun }).Bun.spawn = mockSpawn as typeof Bun.spawn;
+      installMockSpawn();
 
       const { events } = captureEvents<{ deviceId: string }>(manager, 'stream-started');
 
@@ -353,49 +523,54 @@ describe('WebcamManager', () => {
       expect(events[0].deviceId).toBe('test-device');
       expect(events[0].type).toBe('start-error');
     });
-
-    test('uses default resolution and frame rate', async () => {
-      let capturedArgs: string[] = [];
-
-      const mockSpawn = mock((args: string[]) => {
-        capturedArgs = args;
-        return {
-          pid: 12345,
-          stdout: new ReadableStream({ start(c) { c.close(); } }),
-          stderr: new ReadableStream({ start(c) { c.close(); } }),
-          exited: new Promise<number>((resolve) => setTimeout(() => resolve(0), 50))
-        };
-      });
-
-      (globalThis as { Bun: typeof Bun }).Bun.spawn = mockSpawn as typeof Bun.spawn;
-
-      await manager.startStream('test-device');
-
-      expect(capturedArgs).toContain('640x480');
-      expect(capturedArgs).toContain('15');
-    });
   });
 
-  describe('setResolution', () => {
+  describe('setOutputMode', () => {
     test('returns false if device is not streaming', async () => {
-      const result = await manager.setResolution('non-existent', '1920x1080');
+      const result = await manager.setOutputMode('non-existent', 'fullscreen');
       expect(result).toBe(false);
     });
 
-    test('returns true if resolution and frame rate already match', async () => {
+    test('returns true if mode already matches', async () => {
       const killMock = mock(() => {});
       const activeStreams = (manager as unknown as { activeStreams: Map<string, unknown> }).activeStreams;
       activeStreams.set('test-device', {
         process: { kill: killMock },
         deviceId: 'test-device',
-        resolution: '1280x720',
-        frameRate: 30
+        inputResolution: '1280x720',
+        inputFrameRate: 30,
+        outputMode: 'grid',
+        resolution: '640x360',
+        frameRate: 15
       });
 
-      const result = await manager.setResolution('test-device', '1280x720', 30);
+      const result = await manager.setOutputMode('test-device', 'grid');
       expect(result).toBe(true);
       // Should not have killed the process since nothing changed
       expect(killMock).not.toHaveBeenCalled();
+    });
+
+    test('kills old process and starts new one when mode changes', async () => {
+      const killMock = mock(() => {});
+      const activeStreams = (manager as unknown as { activeStreams: Map<string, unknown> }).activeStreams;
+      activeStreams.set('test-device', {
+        process: { kill: killMock, exited: Promise.resolve(0) },
+        deviceId: 'test-device',
+        inputResolution: '1280x720',
+        inputFrameRate: 30,
+        outputMode: 'grid',
+        resolution: '640x360',
+        frameRate: 15
+      });
+
+      installMockSpawn();
+
+      const result = await manager.setOutputMode('test-device', 'fullscreen');
+
+      expect(result).toBe(true);
+      expect(killMock).toHaveBeenCalled();
+      // New stream should be active
+      expect(manager.isStreaming('test-device')).toBe(true);
     });
   });
 
@@ -578,7 +753,10 @@ describe('WebcamManager', () => {
       activeStreams.set('test-device', {
         process: { kill: killMock },
         deviceId: 'test-device',
-        resolution: '640x480',
+        inputResolution: '1280x720',
+        inputFrameRate: 30,
+        outputMode: 'grid',
+        resolution: '640x360',
         frameRate: 15
       });
 

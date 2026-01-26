@@ -3,15 +3,28 @@
  *
  * Provides webcam device enumeration and MJPEG streaming via FFmpeg.
  * Designed for Windows DirectShow devices, streams frames as base64 JPEG.
+ *
+ * Always captures at the camera's native max resolution and frame rate,
+ * then uses FFmpeg output filters to scale and adjust FPS per output mode.
  */
 
 import { EventEmitter } from 'events';
-import { logToFile } from './file-logger.js';
 
 const log = (msg: string) => {
   console.log(msg);
-  logToFile('info', msg);
 };
+
+/** A supported resolution+framerate combination reported by DirectShow. */
+export interface DeviceMode {
+  /** Horizontal resolution in pixels. */
+  width: number;
+  /** Vertical resolution in pixels. */
+  height: number;
+  /** Maximum frame rate for this mode. */
+  maxFps: number;
+  /** Pixel format or codec name (e.g., 'mjpeg', 'yuyv422'). */
+  pixelFormat: string;
+}
 
 /** Represents a webcam device detected by FFmpeg. */
 export interface WebcamDevice {
@@ -21,7 +34,17 @@ export interface WebcamDevice {
   name: string;
   /** Device type (only 'video' devices are used). */
   type: 'video' | 'audio';
+  /** Supported modes discovered via FFmpeg -list_options. */
+  capabilities?: DeviceMode[];
+  /** The best native mode (highest MJPEG resolution and fps). */
+  nativeMode?: { width: number; height: number; fps: number };
 }
+
+/** Output display mode for the stream. */
+export type OutputMode = 'grid' | 'fullscreen';
+
+/** Grid mode output FPS (fullscreen uses native fps). */
+const GRID_FPS = 15;
 
 /** Tracks an active FFmpeg streaming process. */
 interface FFmpegProcess {
@@ -29,9 +52,15 @@ interface FFmpegProcess {
   process: ReturnType<typeof Bun.spawn>;
   /** Device ID this process is streaming from. */
   deviceId: string;
-  /** Current resolution of the stream. */
+  /** Native input resolution being captured. */
+  inputResolution: string;
+  /** Native input frame rate. */
+  inputFrameRate: number;
+  /** Current output mode. */
+  outputMode: OutputMode;
+  /** Current output resolution (may differ from input due to scaling). */
   resolution: string;
-  /** Current frame rate of the stream. */
+  /** Current output frame rate. */
   frameRate: number;
 }
 
@@ -44,32 +73,30 @@ interface FFmpegProcess {
 export class WebcamManager extends EventEmitter {
   /** Map of device ID to active FFmpeg process. */
   private activeStreams: Map<string, FFmpegProcess> = new Map();
-  /** Set of device IDs currently changing resolution (don't emit stop for these). */
+  /** Set of device IDs currently changing mode (don't emit stop for these). */
   private changingResolution: Set<string> = new Set();
-  /** Target frame rate for streaming. */
-  private frameRate: number;
   /** JPEG quality (2-31, lower is better quality). */
   private quality: number;
+  /** Cache of device capabilities to avoid repeated FFmpeg queries. */
+  private deviceCapabilities: Map<string, { capabilities: DeviceMode[]; nativeMode: { width: number; height: number; fps: number } | null }> = new Map();
 
   /**
    * Creates a new WebcamManager.
    *
-   * @param frameRate - Target FPS for streaming. Defaults to 15.
    * @param quality - JPEG quality (2-31, lower is better). Defaults to 5.
    */
-  constructor(frameRate = 15, quality = 5) {
+  constructor(quality = 5) {
     super();
-    this.frameRate = frameRate;
     this.quality = quality;
   }
 
   /**
    * Lists available webcam devices using FFmpeg DirectShow.
    *
-   * Parses FFmpeg's device enumeration output to extract video devices.
-   * Only returns video devices, not audio.
+   * Parses FFmpeg's device enumeration output to extract video devices,
+   * then queries each video device for its supported modes.
    *
-   * @returns Array of detected webcam devices.
+   * @returns Array of detected webcam devices with capabilities.
    */
   async listDevices(): Promise<WebcamDevice[]> {
     const devices: WebcamDevice[] = [];
@@ -117,42 +144,148 @@ export class WebcamManager extends EventEmitter {
       this.emit('error', { type: 'list-error', error: String(error) });
     }
 
+    // Query capabilities for each video device
+    for (const device of devices) {
+      const cached = this.deviceCapabilities.get(device.id);
+      if (cached) {
+        device.capabilities = cached.capabilities;
+        device.nativeMode = cached.nativeMode ?? undefined;
+      } else {
+        const caps = await this.queryDeviceCapabilities(device.id);
+        const native = this.selectNativeMode(caps);
+        device.capabilities = caps;
+        device.nativeMode = native ?? undefined;
+        this.deviceCapabilities.set(device.id, { capabilities: caps, nativeMode: native });
+        log(`[WebcamManager] Device "${device.name}" capabilities: ${caps.length} modes, native: ${native ? `${native.width}x${native.height}@${native.fps}fps` : 'unknown'}`);
+      }
+    }
+
     return devices;
+  }
+
+  /**
+   * Queries supported resolutions and frame rates for a specific device.
+   *
+   * Runs: ffmpeg -f dshow -list_options true -i video=<deviceName>
+   * Parses stderr output for resolution/fps lines.
+   *
+   * @param deviceName - The DirectShow device name to query.
+   * @returns Array of supported modes.
+   */
+  private async queryDeviceCapabilities(deviceName: string): Promise<DeviceMode[]> {
+    const modes: DeviceMode[] = [];
+    try {
+      const proc = Bun.spawn(
+        ['ffmpeg', '-f', 'dshow', '-list_options', 'true', '-i', `video=${deviceName}`],
+        { stdout: 'pipe', stderr: 'pipe' }
+      );
+      const stderr = await new Response(proc.stderr).text();
+      await proc.exited;
+
+      // Parse lines like:
+      //   pixel_format=yuyv422  min s=640x480 fps=5 max s=640x480 fps=30
+      //   vcodec=mjpeg  min s=1280x720 fps=5 max s=1280x720 fps=30
+      const lineRegex =
+        /(?:pixel_format=(\w+)|vcodec=(\w+))\s+min\s+s=(\d+)x(\d+)\s+fps=([\d.]+)\s+max\s+s=(\d+)x(\d+)\s+fps=([\d.]+)/;
+      for (const line of stderr.split('\n')) {
+        const m = line.match(lineRegex);
+        if (m) {
+          modes.push({
+            pixelFormat: m[1] || m[2],
+            width: parseInt(m[6], 10),
+            height: parseInt(m[7], 10),
+            maxFps: parseFloat(m[8]),
+          });
+        }
+      }
+    } catch (error) {
+      log(`[WebcamManager] Failed to query capabilities for ${deviceName}: ${error}`);
+    }
+    return modes;
+  }
+
+  /**
+   * Selects the best native capture mode from device capabilities.
+   *
+   * Prefers MJPEG over raw pixel formats (lower CPU), then highest
+   * resolution, then highest fps.
+   *
+   * @param capabilities - Array of supported modes.
+   * @returns The best mode, or null if no capabilities.
+   */
+  private selectNativeMode(capabilities: DeviceMode[]): { width: number; height: number; fps: number } | null {
+    if (capabilities.length === 0) return null;
+
+    const mjpegModes = capabilities.filter(m => m.pixelFormat === 'mjpeg');
+    const pool = mjpegModes.length > 0 ? mjpegModes : capabilities;
+
+    // Sort by pixel count descending, then fps descending
+    const sorted = [...pool].sort((a, b) => {
+      const pixelsA = a.width * a.height;
+      const pixelsB = b.width * b.height;
+      if (pixelsB !== pixelsA) return pixelsB - pixelsA;
+      return b.maxFps - a.maxFps;
+    });
+
+    const best = sorted[0];
+    return { width: best.width, height: best.height, fps: best.maxFps };
   }
 
   /**
    * Starts MJPEG streaming from a webcam device.
    *
-   * Spawns FFmpeg to capture from the device and output MJPEG to stdout.
-   * Emits 'frame' events with base64-encoded JPEG data.
+   * Opens the camera at its native max resolution and frame rate.
+   * Applies output scaling and frame rate based on the output mode.
    *
    * @param deviceId - The device ID (name) to stream from.
-   * @param resolution - Resolution string (e.g., '640x480', '1920x1080'). Defaults to '640x480'.
-   * @param frameRate - Frame rate for streaming. Defaults to class frameRate (15).
+   * @param outputMode - 'grid' for downscaled output, 'fullscreen' for native pass-through.
    * @returns True if stream started successfully.
    */
-  async startStream(deviceId: string, resolution: string = '640x480', frameRate?: number): Promise<boolean> {
+  async startStream(deviceId: string, outputMode: OutputMode = 'grid'): Promise<boolean> {
     if (this.activeStreams.has(deviceId)) {
       console.log(`Stream already active for device: ${deviceId}`);
       return true;
     }
 
-    const fps = frameRate ?? this.frameRate;
+    // Look up cached capabilities
+    const cached = this.deviceCapabilities.get(deviceId);
+    const nativeMode = cached?.nativeMode;
+
+    const inputWidth = nativeMode?.width ?? 640;
+    const inputHeight = nativeMode?.height ?? 480;
+    const inputFps = nativeMode?.fps ?? 30;
+    const inputResolution = `${inputWidth}x${inputHeight}`;
+
+    // Grid mode: half the native resolution (preserving aspect ratio), capped fps
+    // Fullscreen mode: native resolution and fps, no scaling
+    const isGrid = outputMode === 'grid';
+    const gridWidth = Math.round(inputWidth / 2);
+    const gridHeight = Math.round(inputHeight / 2);
+    const needsScale = isGrid && (gridWidth !== inputWidth || gridHeight !== inputHeight);
+    const outputFps = isGrid ? GRID_FPS : inputFps;
 
     try {
-      log(`[WebcamManager] Starting webcam stream for: ${deviceId} at ${resolution} @ ${fps}fps`);
+      log(`[WebcamManager] Starting stream for: ${deviceId}, input: ${inputResolution}@${inputFps}fps, mode: ${outputMode}`);
 
-      // FFmpeg command to capture from webcam and output MJPEG to stdout
+      // FFmpeg command: capture at native resolution, apply output filters
       // -video_size must come BEFORE -i to set the capture resolution from the camera
-      const args = [
+      const args: string[] = [
         '-f', 'dshow',
-        '-video_size', resolution,
-        '-framerate', String(fps),
+        '-video_size', inputResolution,
         '-i', `video=${deviceId}`,
+      ];
+
+      // Add scale filter for grid mode: half native resolution
+      if (needsScale) {
+        args.push('-vf', `scale=${gridWidth}:${gridHeight}`);
+      }
+
+      args.push(
+        '-r', String(outputFps),
         '-f', 'mjpeg',
         '-q:v', String(this.quality),
         '-',
-      ];
+      );
 
       log(`[WebcamManager] FFmpeg args: ffmpeg ${args.join(' ')}`);
 
@@ -161,7 +294,19 @@ export class WebcamManager extends EventEmitter {
         stderr: 'pipe',
       });
 
-      this.activeStreams.set(deviceId, { process: proc, deviceId, resolution, frameRate: fps });
+      const outputResolution = needsScale
+        ? `${gridWidth}x${gridHeight}`
+        : inputResolution;
+
+      this.activeStreams.set(deviceId, {
+        process: proc,
+        deviceId,
+        inputResolution,
+        inputFrameRate: inputFps,
+        outputMode,
+        resolution: outputResolution,
+        frameRate: outputFps,
+      });
 
       // Handle stderr for logging (FFmpeg outputs progress to stderr)
       this.handleStderr(deviceId, proc.stderr);
@@ -172,11 +317,9 @@ export class WebcamManager extends EventEmitter {
       // Handle process exit
       proc.exited.then((code) => {
         log(`[WebcamManager] FFmpeg process exited for ${deviceId} with code ${code}`);
-        log(`[WebcamManager] changingResolution set: ${JSON.stringify(Array.from(this.changingResolution))}`);
-        log(`[WebcamManager] Is changing resolution: ${this.changingResolution.has(deviceId)}`);
-        // Don't emit stream-stopped if we're just changing resolution
+        // Don't emit stream-stopped if we're just changing mode
         if (this.changingResolution.has(deviceId)) {
-          log(`[WebcamManager] Skipping stream-stopped emit for ${deviceId} (resolution change)`);
+          log(`[WebcamManager] Skipping stream-stopped emit for ${deviceId} (mode change)`);
           return;
         }
         log(`[WebcamManager] Emitting stream-stopped for ${deviceId}`);
@@ -226,32 +369,31 @@ export class WebcamManager extends EventEmitter {
   }
 
   /**
-   * Changes the resolution and/or frame rate of an active stream.
-   * Stops the current stream and restarts it with the new settings.
+   * Changes the output mode of an active stream (grid vs fullscreen).
    *
-   * @param deviceId - The device ID to change settings for.
-   * @param resolution - New resolution string (e.g., '1920x1080').
-   * @param frameRate - New frame rate. Optional.
-   * @returns True if change was initiated successfully.
+   * Kills and restarts FFmpeg. The camera input resolution stays the same;
+   * only the output filter chain changes.
+   *
+   * @param deviceId - The device ID to change mode for.
+   * @param outputMode - New output mode.
+   * @returns True if mode change was initiated successfully.
    */
-  async setResolution(deviceId: string, resolution: string, frameRate?: number): Promise<boolean> {
+  async setOutputMode(deviceId: string, outputMode: OutputMode): Promise<boolean> {
     const stream = this.activeStreams.get(deviceId);
     if (!stream) {
       console.log(`No active stream for device: ${deviceId}`);
       return false;
     }
 
-    const newFrameRate = frameRate ?? stream.frameRate;
-    if (stream.resolution === resolution && stream.frameRate === newFrameRate) {
-      console.log(`Stream already at ${resolution} @ ${newFrameRate}fps for device: ${deviceId}`);
+    if (stream.outputMode === outputMode) {
+      console.log(`Stream already in ${outputMode} mode for device: ${deviceId}`);
       return true;
     }
 
-    log(`[WebcamManager] Changing settings for ${deviceId} from ${stream.resolution}@${stream.frameRate}fps to ${resolution}@${newFrameRate}fps`);
+    log(`[WebcamManager] Changing output mode for ${deviceId} from ${stream.outputMode} to ${outputMode}`);
 
-    // Mark as changing resolution so we don't emit stream-stopped
+    // Mark as changing so we don't emit stream-stopped
     this.changingResolution.add(deviceId);
-    log(`[WebcamManager] Added ${deviceId} to changingResolution: ${JSON.stringify(Array.from(this.changingResolution))}`);
 
     // Stop current stream and wait for it to exit
     try {
@@ -260,19 +402,18 @@ export class WebcamManager extends EventEmitter {
       stream.process.kill();
       this.activeStreams.delete(deviceId);
 
-      // Wait for the old process to actually exit before starting new one
       log(`[WebcamManager] Waiting for old process to exit`);
       await oldProcess.exited;
       log(`[WebcamManager] Old process exited, starting new stream`);
     } catch (error) {
       this.changingResolution.delete(deviceId);
-      console.error(`Error stopping stream for resolution change: ${error}`);
+      console.error(`Error stopping stream for mode change: ${error}`);
       return false;
     }
 
-    // Start new stream with new settings (keep changingResolution flag until stream starts)
-    log(`[WebcamManager] Starting new stream at ${resolution}@${newFrameRate}fps`);
-    const result = await this.startStream(deviceId, resolution, newFrameRate);
+    // Start new stream with new mode
+    log(`[WebcamManager] Starting new stream in ${outputMode} mode`);
+    const result = await this.startStream(deviceId, outputMode);
 
     // Now safe to clear the flag after new stream has started
     this.changingResolution.delete(deviceId);
