@@ -22,7 +22,7 @@ import {
   setConfigDir,
   getProjectsFile,
   type Project,
-} from './projects';
+} from '../../server/projects';
 
 /** Temporary directory used for test isolation. */
 let testDir: string;

@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, beforeEach, mock } from 'bun:test';
-import { ClaudeCodeManager } from './claude-code';
+import { ClaudeCodeManager } from '../../server/claude-code';
 
 describe('ClaudeCodeManager', () => {
   let manager: ClaudeCodeManager;

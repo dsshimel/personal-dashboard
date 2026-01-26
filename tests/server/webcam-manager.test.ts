@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
-import { WebcamManager } from './webcam-manager';
+import { WebcamManager } from '../../server/webcam-manager';
 import { createMockJpegFrame, captureEvents, encodeString } from './test-utils';
 
 // Store original Bun.spawn

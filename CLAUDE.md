@@ -9,7 +9,7 @@ bun run dev:all      # Development (frontend + backend servers)
 bun run prod:all     # Production build and serve
 bun run server       # Backend only (port 3001)
 bun run webcam       # Webcam server only (port 3002)
-bun test server/     # Run server tests
+bun test tests/server/  # Run server tests
 bun run lint         # Run ESLint
 ```
 
@@ -67,9 +67,11 @@ Browser
 
 Before starting non-trivial changes, enter plan mode and ask the user clarifying questions about requirements, edge cases, and preferred approach. Get explicit confirmation on the plan before writing any code.
 
+After finishing work, run `bun run build` to make sure everything builds with no errors. Run `bun test tests/server/` to make sure all tests pass.
+
 ## Testing
 
-When adding new features or changing existing behavior, add corresponding tests in the relevant `server/*.test.ts` file. Run tests with `bun test server/` to verify.
+When adding new features or changing existing behavior, add corresponding tests in `tests/server/`. Run tests with `bun test tests/server/` to verify.
 
 ## Session Management
 

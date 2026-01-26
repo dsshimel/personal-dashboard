@@ -8,12 +8,13 @@
 
 import { WebSocketServer, WebSocket } from 'ws';
 import { WebcamManager } from './webcam-manager.js';
-import { appendFileSync } from 'fs';
+import { logToFile, initLogger } from './file-logger.js';
+
+initLogger('webcam');
 
 const log = (msg: string) => {
-  const line = `[${new Date().toISOString()}] ${msg}\n`;
   console.log(msg);
-  try { appendFileSync('logs.txt', line); } catch {}
+  logToFile('info', msg);
 };
 
 const WEBCAM_PORT = process.env.WEBCAM_PORT || 3002;

@@ -516,6 +516,10 @@
   justify-content: center;
 }
 
+.scroll-to-bottom-button.bottom-corner {
+  bottom: 20px;
+}
+
 .scroll-to-bottom-button:hover {
   opacity: 1;
   transform: scale(1.1);

@@ -11,9 +11,12 @@ import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { ClaudeCodeManager } from './claude-code.js';
 import { loadProjects, addProject, removeProject, updateProjectConversation, listProjectConversations, addConversationToProject, removeConversationFromProject } from './projects.js';
+import { logToFile, initLogger } from './file-logger.js';
 import { readdir, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
+
+initLogger('main');
 
 const PORT = process.env.PORT || 3001;
 const WORKING_DIR = process.env.WORKING_DIR || process.cwd();
@@ -109,6 +112,8 @@ function getMessagesSince(sessionId: string, sinceId: number): BufferedMessage[]
  * @param message - Log message content.
  */
 function broadcastLog(level: 'info' | 'warn' | 'error', message: string) {
+  logToFile(level, message);
+
   const logMessage = JSON.stringify({
     type: 'log',
     level,

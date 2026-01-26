@@ -5,7 +5,7 @@
  * with additional features for server log viewing and webcam streaming.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import './App.css'
 
 /**
@@ -121,6 +121,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('terminal')
   const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
   const [showScrollButton, setShowScrollButton] = useState(false)
+  const [showLogsScrollButton, setShowLogsScrollButton] = useState(false)
 
   // Webcam state
   const [webcamDevices, setWebcamDevices] = useState<WebcamDevice[]>([])
@@ -678,6 +679,18 @@ function App() {
     }
   }, [activeProject, activeTab, fetchProjectConversations])
 
+  // Index of the message that should get the gold "ready" highlight.
+  // Prefer the last output message; fall back to the last non-status message.
+  const readyMessageIndex = useMemo(() => {
+    const lastOutput = messages.findLastIndex(m => m.type === 'output')
+    if (lastOutput !== -1) return lastOutput
+    // Fall back: last message that isn't a status line
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type !== 'status') return i
+    }
+    return messages.length - 1
+  }, [messages])
+
   // Auto-scroll to bottom for terminal messages
   useEffect(() => {
     if (outputRef.current) {
@@ -933,6 +946,22 @@ function App() {
     }
   }, [])
 
+  /** Scrolls the logs output to the bottom. */
+  const scrollLogsToBottom = useCallback(() => {
+    if (logsOutputRef.current) {
+      logsOutputRef.current.scrollTop = logsOutputRef.current.scrollHeight
+    }
+  }, [])
+
+  /** Handles scroll events to show/hide the logs scroll-to-bottom button. */
+  const handleLogsScroll = useCallback(() => {
+    if (logsOutputRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = logsOutputRef.current
+      const isNearBottom = scrollHeight - scrollTop - clientHeight < 100
+      setShowLogsScrollButton(!isNearBottom)
+    }
+  }, [])
+
   /** Sets the resolution and frame rate for a webcam stream. */
   const setWebcamResolution = useCallback((deviceId: string, resolution: string, frameRate?: number) => {
     console.log('[Webcam] setWebcamResolution called:', deviceId, resolution, frameRate ? `@ ${frameRate}fps` : '')
@@ -1182,8 +1211,7 @@ function App() {
             </div>
           )}
           {messages.map((msg, index) => {
-            const isLastMessage = index === messages.length - 1
-            const isReady = isLastMessage && status === 'connected' && messages.length > 0
+            const isReady = index === readyMessageIndex && status === 'connected'
             return (
               <div key={msg.id} className={`message message-${msg.type}${isReady ? ' message-ready' : ''}`}>
                 {msg.type === 'input' && <span className="prompt">&gt; </span>}
@@ -1214,7 +1242,7 @@ function App() {
         )}
 
         {/* Logs output - always mounted, hidden when inactive */}
-        <div className={`logs-output ${activeTab !== 'logs' ? 'tab-hidden' : ''}`} ref={logsOutputRef}>
+        <div className={`logs-output ${activeTab !== 'logs' ? 'tab-hidden' : ''}`} ref={logsOutputRef} onScroll={handleLogsScroll}>
           {logMessages.length === 0 && (
             <div className="welcome-message">
               No server logs yet.
@@ -1230,6 +1258,17 @@ function App() {
             </div>
           ))}
         </div>
+
+        {/* Scroll to bottom button for logs */}
+        {activeTab === 'logs' && showLogsScrollButton && (
+          <button
+            className="scroll-to-bottom-button bottom-corner"
+            onClick={scrollLogsToBottom}
+            aria-label="Scroll to bottom"
+          >
+            ↓
+          </button>
+        )}
 
         {/* Webcams output - always mounted, hidden when inactive */}
         <div className={`webcams-container ${activeTab !== 'webcams' ? 'tab-hidden' : ''}`} ref={webcamsContainerRef}>

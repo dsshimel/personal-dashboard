@@ -6,12 +6,11 @@
  */
 
 import { EventEmitter } from 'events';
-import { appendFileSync } from 'fs';
+import { logToFile } from './file-logger.js';
 
 const log = (msg: string) => {
-  const line = `[${new Date().toISOString()}] ${msg}\n`;
   console.log(msg);
-  try { appendFileSync('logs.txt', line); } catch {}
+  logToFile('info', msg);
 };
 
 /** Represents a webcam device detected by FFmpeg. */
