@@ -25,7 +25,7 @@ let appProcess: ReturnType<typeof spawn> | null = null;
  * Uses platform-specific commands (taskkill on Windows, fuser on Linux).
  */
 function killProcessesOnPorts() {
-  const ports = [3001, 3002, 5173];
+  const ports = [4001, 4002, 6969];
   console.log(`[Watcher] Killing processes on ports ${ports.join(', ')}...`);
 
   if (isWindows) {

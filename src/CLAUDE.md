@@ -16,8 +16,8 @@ Uses React hooks (`useState`, `useRef`, `useCallback`) for local state. No exter
 
 ### WebSocket Connections
 Two separate connections managed via refs:
-- `wsRef` - Main server (port 3001) for Claude commands
-- `webcamWsRef` - Webcam server (port 3002) for video streaming
+- `wsRef` - Main server (port 4001) for Claude commands
+- `webcamWsRef` - Webcam server (port 4002) for video streaming
 
 ### Key Interfaces
 

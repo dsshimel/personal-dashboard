@@ -20,6 +20,6 @@ export default defineConfig({
   server: {
     // Bind to all interfaces for remote access (e.g., via Tailscale)
     host: "0.0.0.0",
-    port: 5173,
+    port: 6969,
   },
 });

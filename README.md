@@ -34,8 +34,8 @@ bun run prod:all
 ```bash
 bun run dev:all      # Development (frontend + backend servers)
 bun run prod:all     # Production build and serve
-bun run server       # Backend only (port 3001)
-bun run webcam       # Webcam server only (port 3002)
+bun run server       # Backend only (port 4001)
+bun run webcam       # Webcam server only (port 4002)
 bun test server/     # Run server tests
 bun run lint         # Run ESLint
 ```
@@ -44,15 +44,15 @@ bun run lint         # Run ESLint
 
 ```
 Browser
-  ├─ WebSocket :3001 ─→ Express Server ─→ ClaudeCodeManager ─→ Claude CLI
-  └─ WebSocket :3002 ─→ WebcamServer ─→ WebcamManager ─→ FFmpeg
+  ├─ WebSocket :4001 ─→ Express Server ─→ ClaudeCodeManager ─→ Claude CLI
+  └─ WebSocket :4002 ─→ WebcamServer ─→ WebcamManager ─→ FFmpeg
 ```
 
 ## Ports
 
-- **5173** - Vite dev server (frontend)
-- **3001** - Main WebSocket server (Claude CLI)
-- **3002** - Webcam WebSocket server
+- **6969** - Vite dev server (frontend)
+- **4001** - Main WebSocket server (Claude CLI)
+- **4002** - Webcam WebSocket server
 
 ## Directory Structure
 

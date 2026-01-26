@@ -191,7 +191,7 @@ function App() {
     setStatus('connecting')
 
     // Use current hostname for Tailscale compatibility
-    const wsUrl = `ws://${window.location.hostname}:3001`
+    const wsUrl = `ws://${window.location.hostname}:4001`
     console.log('[WS] Connecting to:', wsUrl)
     addMessage('status', `Connecting to ${wsUrl}...`)
 
@@ -230,7 +230,7 @@ function App() {
         // If page was reloaded or no message ID, fetch full conversation history
         if (needsHistoryReload) {
           try {
-            const res = await fetch(`http://${window.location.hostname}:3001/sessions/${currentSession}/history`)
+            const res = await fetch(`http://${window.location.hostname}:4001/sessions/${currentSession}/history`)
             const history: Array<{ type: 'input' | 'output' | 'error' | 'status'; content: string; timestamp: string }> = await res.json()
             const restoredMessages: Message[] = history.map(msg => ({
               id: generateId(),
@@ -248,7 +248,7 @@ function App() {
           // We have a last message ID, fetch any missed messages
           try {
             const res = await fetch(
-              `http://${window.location.hostname}:3001/sessions/${currentSession}/messages?since=${lastId}`
+              `http://${window.location.hostname}:4001/sessions/${currentSession}/messages?since=${lastId}`
             )
             const data: { messages: BufferedMessage[]; latestId: number } = await res.json()
 
@@ -372,7 +372,7 @@ function App() {
 
     if (webcamWsRef.current?.readyState === WebSocket.OPEN) return
 
-    const wsUrl = `ws://${window.location.hostname}:3002`
+    const wsUrl = `ws://${window.location.hostname}:4002`
     console.log('[Webcam WS] Connecting to:', wsUrl)
 
     const ws = new WebSocket(wsUrl)
@@ -473,7 +473,7 @@ function App() {
   const fetchSessions = useCallback(async () => {
     setLoadingSessions(true)
     try {
-      const apiUrl = `http://${window.location.hostname}:3001/sessions`
+      const apiUrl = `http://${window.location.hostname}:4001/sessions`
       const response = await fetch(apiUrl)
       if (response.ok) {
         const data = await response.json()
@@ -490,7 +490,7 @@ function App() {
   const fetchProjects = useCallback(async () => {
     setLoadingProjects(true)
     try {
-      const apiUrl = `http://${window.location.hostname}:3001/projects`
+      const apiUrl = `http://${window.location.hostname}:4001/projects`
       const response = await fetch(apiUrl)
       if (response.ok) {
         const data = await response.json()
@@ -509,7 +509,7 @@ function App() {
     if (!dir) return
 
     try {
-      const apiUrl = `http://${window.location.hostname}:3001/projects`
+      const apiUrl = `http://${window.location.hostname}:4001/projects`
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -531,7 +531,7 @@ function App() {
   /** Removes a project by ID. */
   const handleRemoveProject = useCallback(async (projectId: string) => {
     try {
-      const apiUrl = `http://${window.location.hostname}:3001/projects/${projectId}`
+      const apiUrl = `http://${window.location.hostname}:4001/projects/${projectId}`
       const response = await fetch(apiUrl, { method: 'DELETE' })
       if (response.ok) {
         if (activeProject?.id === projectId) {
@@ -549,7 +549,7 @@ function App() {
   const fetchProjectConversations = useCallback(async (projectId: string) => {
     setLoadingProjectConversations(true)
     try {
-      const apiUrl = `http://${window.location.hostname}:3001/projects/${projectId}/conversations`
+      const apiUrl = `http://${window.location.hostname}:4001/projects/${projectId}/conversations`
       const response = await fetch(apiUrl)
       if (response.ok) {
         const data = await response.json()
@@ -583,7 +583,7 @@ function App() {
 
       // Fetch and restore conversation history
       try {
-        const res = await fetch(`http://${window.location.hostname}:3001/sessions/${project.lastConversationId}/history`)
+        const res = await fetch(`http://${window.location.hostname}:4001/sessions/${project.lastConversationId}/history`)
         const history: Array<{ type: 'input' | 'output' | 'error' | 'status'; content: string; timestamp: string }> = await res.json()
         const restoredMessages: Message[] = history.map(msg => ({
           id: generateId(),
@@ -652,7 +652,7 @@ function App() {
       const savedProjectId = localStorage.getItem('activeProjectId')
       if (savedProjectId) {
         try {
-          const apiUrl = `http://${window.location.hostname}:3001/projects`
+          const apiUrl = `http://${window.location.hostname}:4001/projects`
           const response = await fetch(apiUrl)
           if (response.ok) {
             const allProjects: Project[] = await response.json()
@@ -815,7 +815,7 @@ function App() {
 
     // Fetch and restore conversation history
     try {
-      const res = await fetch(`http://${window.location.hostname}:3001/sessions/${session.id}/history`)
+      const res = await fetch(`http://${window.location.hostname}:4001/sessions/${session.id}/history`)
       const history: Array<{ type: 'input' | 'output' | 'error' | 'status'; content: string; timestamp: string }> = await res.json()
       const restoredMessages: Message[] = history.map(msg => ({
         id: generateId(),
@@ -845,7 +845,7 @@ function App() {
   /** Triggers server restart via REST API and handles page reload countdown. */
   const handleRestart = async () => {
     try {
-      const apiUrl = `http://${window.location.hostname}:3001/restart`
+      const apiUrl = `http://${window.location.hostname}:4001/restart`
       addMessage('status', 'Requesting server restart...')
       const response = await fetch(apiUrl, { method: 'POST' })
       if (response.ok) {

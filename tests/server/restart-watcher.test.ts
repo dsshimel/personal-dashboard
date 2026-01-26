@@ -23,7 +23,7 @@ describe('Restart Watcher Logic', () => {
   });
 
   describe('Port Killing Commands', () => {
-    const ports = [3001, 3002, 5173];
+    const ports = [4001, 4002, 6969];
 
     test('generates Windows command for each port', () => {
       const commands: string[] = [];
@@ -34,9 +34,9 @@ describe('Restart Watcher Logic', () => {
       }
 
       expect(commands.length).toBe(3);
-      expect(commands[0]).toContain(':3001');
-      expect(commands[1]).toContain(':3002');
-      expect(commands[2]).toContain(':5173');
+      expect(commands[0]).toContain(':4001');
+      expect(commands[1]).toContain(':4002');
+      expect(commands[2]).toContain(':6969');
       expect(commands[0]).toContain('taskkill');
     });
 
@@ -49,9 +49,9 @@ describe('Restart Watcher Logic', () => {
       }
 
       expect(commands.length).toBe(3);
-      expect(commands[0]).toContain('fuser -k 3001/tcp');
-      expect(commands[1]).toContain('fuser -k 3002/tcp');
-      expect(commands[2]).toContain('fuser -k 5173/tcp');
+      expect(commands[0]).toContain('fuser -k 4001/tcp');
+      expect(commands[1]).toContain('fuser -k 4002/tcp');
+      expect(commands[2]).toContain('fuser -k 6969/tcp');
     });
   });
 

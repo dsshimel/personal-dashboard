@@ -18,7 +18,7 @@ import { homedir } from 'os';
 
 initLogger('main');
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 4001;
 const WORKING_DIR = process.env.WORKING_DIR || process.cwd();
 
 /** Maximum messages to buffer per session for reconnection support. */

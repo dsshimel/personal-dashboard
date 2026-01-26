@@ -6,9 +6,9 @@ Node.js/Bun backend providing WebSocket servers and Claude CLI process managemen
 
 | File | Purpose |
 |------|---------|
-| `index.ts` | Express server (port 3001): WebSocket for commands, REST API for sessions |
+| `index.ts` | Express server (port 4001): WebSocket for commands, REST API for sessions |
 | `claude-code.ts` | `ClaudeCodeManager` class: spawns Claude CLI, handles I/O streaming |
-| `webcam-server.ts` | WebSocket server (port 3002) for webcam streaming |
+| `webcam-server.ts` | WebSocket server (port 4002) for webcam streaming |
 | `webcam-manager.ts` | `WebcamManager` class: FFmpeg webcam capture and MJPEG streaming |
 | `file-logger.ts` | Session-based file logging to `_logs/` directory |
 | `restart-watcher.ts` | Standalone process that monitors for restart signals |

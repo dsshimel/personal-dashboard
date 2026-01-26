@@ -35,7 +35,7 @@ const log = (msg: string) => {
   broadcastLog('info', msg);
 };
 
-const WEBCAM_PORT = process.env.WEBCAM_PORT || 3002;
+const WEBCAM_PORT = process.env.WEBCAM_PORT || 4002;
 
 // Intercept console methods to broadcast logs to connected webcam clients
 const originalConsoleLog = console.log;

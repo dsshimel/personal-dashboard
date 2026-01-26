@@ -8,8 +8,8 @@ Web terminal interface for Claude Code CLI with webcam streaming support.
 bun run dev:all      # Development (frontend + backend servers)
 bun run prod:all     # Production build and serve
 bun run prod:watch   # Production build with restart watcher
-bun run server       # Backend only (port 3001)
-bun run webcam       # Webcam server only (port 3002)
+bun run server       # Backend only (port 4001)
+bun run webcam       # Webcam server only (port 4002)
 bun test tests/server/  # Run server tests
 bun run lint         # Run ESLint
 ```
@@ -18,8 +18,8 @@ bun run lint         # Run ESLint
 
 ```
 Browser
-  ├─ WebSocket :3001 ─→ Express Server ─→ ClaudeCodeManager ─→ Claude CLI
-  └─ WebSocket :3002 ─→ WebcamServer ─→ WebcamManager ─→ FFmpeg
+  ├─ WebSocket :4001 ─→ Express Server ─→ ClaudeCodeManager ─→ Claude CLI
+  └─ WebSocket :4002 ─→ WebcamServer ─→ WebcamManager ─→ FFmpeg
 ```
 
 ## Directory Structure
@@ -32,15 +32,15 @@ Browser
 | File | Purpose |
 |------|---------|
 | `src/App.tsx` | Main React component with all UI, state, and WebSocket handling |
-| `server/index.ts` | Express server + WebSocket (port 3001), REST API for sessions |
+| `server/index.ts` | Express server + WebSocket (port 4001), REST API for sessions |
 | `server/claude-code.ts` | `ClaudeCodeManager` class - spawns and manages Claude CLI |
-| `server/webcam-server.ts` | WebSocket server for webcam streams (port 3002) |
+| `server/webcam-server.ts` | WebSocket server for webcam streams (port 4002) |
 | `server/webcam-manager.ts` | `WebcamManager` class - FFmpeg webcam capture/streaming |
 | `server/restart-watcher.ts` | Process watcher for graceful server restarts |
 
 ## WebSocket Protocol
 
-### Main Server (port 3001)
+### Main Server (port 4001)
 
 | Message | Direction | Purpose |
 |---------|-----------|---------|
@@ -54,7 +54,7 @@ Browser
 | `{type: 'session', content: string}` | server→client | New session ID |
 | `{type: 'log', level, content, timestamp}` | server→client | Server log broadcast |
 
-### Webcam Server (port 3002)
+### Webcam Server (port 4002)
 
 | Message | Direction | Purpose |
 |---------|-----------|---------|
