@@ -11,7 +11,6 @@ Node.js/Bun backend providing WebSocket servers and Claude CLI process managemen
 | `webcam-server.ts` | WebSocket server (port 3002) for webcam streaming |
 | `webcam-manager.ts` | `WebcamManager` class: FFmpeg webcam capture and MJPEG streaming |
 | `restart-watcher.ts` | Standalone process that monitors for restart signals |
-| `claude-code.test.ts` | Unit tests for ClaudeCodeManager |
 
 ## Key Classes
 
@@ -38,9 +37,10 @@ Manages FFmpeg webcam capture. Extends `EventEmitter`.
 - `error` - FFmpeg error
 
 **Methods:**
-- `listDevices()` - Enumerate webcams via FFmpeg
-- `startStream(deviceId)` - Begin capturing
+- `listDevices()` - Enumerate webcams via FFmpeg, queries device capabilities
+- `startStream(deviceId, outputMode)` - Begin capturing at native resolution; `'grid'` scales to half native, `'fullscreen'` passes through
 - `stopStream(deviceId)` - Stop capturing
+- `setOutputMode(deviceId, outputMode)` - Switch between grid/fullscreen (kills and restarts FFmpeg)
 
 ## Process Spawning
 

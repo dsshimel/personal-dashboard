@@ -58,10 +58,12 @@ Browser
 | Message | Direction | Purpose |
 |---------|-----------|---------|
 | `{type: 'webcam-list'}` | client→server | Request device list |
-| `{type: 'webcam-start', deviceId}` | client→server | Start streaming |
+| `{type: 'webcam-start', deviceId, mode?}` | client→server | Start streaming (mode: `'grid'`\|`'fullscreen'`) |
 | `{type: 'webcam-stop', deviceId}` | client→server | Stop streaming |
+| `{type: 'webcam-mode', deviceId, mode}` | client→server | Switch output mode (grid/fullscreen) |
 | `{type: 'webcam-devices', devices}` | server→client | Device list response |
 | `{type: 'webcam-frame', deviceId, data}` | server→client | Base64 JPEG frame |
+| `{type: 'webcam-log', level, content, timestamp}` | server→client | Webcam server log broadcast |
 
 ## Workflow
 

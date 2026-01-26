@@ -37,7 +37,7 @@ type ActiveTab = 'terminal' | 'logs' | 'webcams'
 
 ## UI Components
 
-- **Sidebar** - Session list, new chat, restart server
+- **Sidebar** - Session list, new chat
 - **Tab bar** - Terminal / Server Logs / Webcams
 - **Terminal output** - Message history with auto-scroll
 - **Input** - Command entry with Enter to send, Ctrl+C to abort
