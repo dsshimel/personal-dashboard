@@ -505,7 +505,7 @@
 
 .terminal-input-container {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   padding: 12px 16px;
   background-color: #16213e;
   border-top: 1px solid #2a3f5f;
@@ -519,6 +519,8 @@
   color: #4ade80;
   font-weight: bold;
   margin-right: 8px;
+  line-height: 1.4;
+  align-self: flex-start;
 }
 
 .terminal-input {
@@ -530,6 +532,10 @@
   font-size: inherit;
   outline: none;
   caret-color: #4ade80;
+  resize: none;
+  overflow-y: hidden;
+  line-height: 1.4;
+  max-height: 200px;
 }
 
 .terminal-input::placeholder {

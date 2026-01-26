@@ -149,7 +149,7 @@ function App() {
   const outputRef = useRef<HTMLDivElement>(null)
   const logsOutputRef = useRef<HTMLDivElement>(null)
   const webcamsContainerRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
   const webcamReconnectTimeoutRef = useRef<number | null>(null)
   const previousActiveWebcamsRef = useRef<Set<string>>(new Set())
@@ -749,6 +749,9 @@ function App() {
     const command = input.trim()
     addMessage('input', command)
     setInput('')
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto'
+    }
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       const msg: Record<string, string> = {
@@ -1507,12 +1510,16 @@ function App() {
         {activeTab === 'terminal' && (
           <div className="terminal-input-container">
             <span className="input-prompt">&gt;</span>
-            <input
+            <textarea
               ref={inputRef}
-              type="text"
               className="terminal-input"
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              rows={1}
+              onChange={(e) => {
+                setInput(e.target.value)
+                e.target.style.height = 'auto'
+                e.target.style.height = e.target.scrollHeight + 'px'
+              }}
               onKeyDown={handleKeyDown}
               placeholder={status === 'connected' ? 'Type a message...' : `Status: ${status}...`}
             />
