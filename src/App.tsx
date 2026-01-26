@@ -53,6 +53,22 @@ interface Session {
   project: string
 }
 
+/** Represents a project with a directory and optional GitHub link. */
+interface Project {
+  /** Unique identifier (slugified directory name). */
+  id: string
+  /** Display name (directory basename). */
+  name: string
+  /** Absolute path to the project directory. */
+  directory: string
+  /** GitHub repository URL, if detected from git remote. */
+  githubUrl: string | null
+  /** Last used Claude conversation ID for quick resume. */
+  lastConversationId: string | null
+  /** Explicit list of conversation IDs associated with this project. */
+  conversationIds: string[]
+}
+
 /** Represents a webcam device detected by FFmpeg. */
 interface WebcamDevice {
   /** Device identifier (device name on Windows). */
@@ -67,7 +83,7 @@ interface WebcamDevice {
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 
 /** Currently active UI tab. */
-type ActiveTab = 'terminal' | 'logs' | 'webcams'
+type ActiveTab = 'terminal' | 'logs' | 'webcams' | 'projects'
 
 /** Message stored in server buffer for reconnection support. */
 interface BufferedMessage {
@@ -117,6 +133,14 @@ function App() {
   const [stoppingWebcams, setStoppingWebcams] = useState<Set<string>>(new Set())
   const [changingResolution, setChangingResolution] = useState<Set<string>>(new Set())
 
+  // Projects state
+  const [projects, setProjects] = useState<Project[]>([])
+  const [activeProject, setActiveProject] = useState<Project | null>(null)
+  const [newProjectPath, setNewProjectPath] = useState('')
+  const [loadingProjects, setLoadingProjects] = useState(false)
+  const [projectConversations, setProjectConversations] = useState<Session[]>([])
+  const [loadingProjectConversations, setLoadingProjectConversations] = useState(false)
+
   // Refs for mutable values that shouldn't trigger re-renders
   const isRestartingRef = useRef(false)
   const wsRef = useRef<WebSocket | null>(null)
@@ -131,6 +155,7 @@ function App() {
   const changingResolutionRef = useRef<Set<string>>(new Set())
   const lastMessageIdRef = useRef<number>(0)
   const sessionIdRef = useRef<string | null>(null)
+  const activeProjectRef = useRef<Project | null>(null)
   const fullscreenOverlayRef = useRef<HTMLDivElement>(null)
 
   /** Adds a new message to the terminal output. */
@@ -192,7 +217,11 @@ function App() {
         console.log(`[WS] Reconnecting to session ${currentSession}, last message ID: ${lastId}, needsHistoryReload: ${needsHistoryReload}`)
 
         // Resume the session on the server
-        ws.send(JSON.stringify({ type: 'resume', sessionId: currentSession }))
+        const resumeMsg: Record<string, string> = { type: 'resume', sessionId: currentSession }
+        if (activeProjectRef.current) {
+          resumeMsg.workingDirectory = activeProjectRef.current.directory
+        }
+        ws.send(JSON.stringify(resumeMsg))
         setSessionId(currentSession)
         sessionIdRef.current = currentSession
         localStorage.setItem('currentSessionId', currentSession)
@@ -209,10 +238,10 @@ function App() {
               timestamp: new Date(msg.timestamp),
             }))
             setMessages(restoredMessages)
-            addMessage('status', `Restored session with ${history.length} messages`)
+            addMessage('status', `Restored conversation with ${history.length} messages`)
           } catch (err) {
             console.error('Failed to fetch session history:', err)
-            addMessage('status', `Resumed session: ${currentSession.slice(0, 8)}...`)
+            addMessage('status', `Resumed conversation: ${currentSession.slice(0, 8)}...`)
           }
         } else {
           // We have a last message ID, fetch any missed messages
@@ -293,7 +322,7 @@ function App() {
             setSessionId(data.content)
             sessionIdRef.current = data.content
             localStorage.setItem('currentSessionId', data.content)
-            addMessage('status', `Session: ${data.content}`)
+            addMessage('status', `Conversation: ${data.content}`)
             break
           case 'log':
             addLogMessage(data.level, data.content, data.timestamp)
@@ -453,6 +482,148 @@ function App() {
     }
   }, [])
 
+  /** Fetches all projects from the REST API. */
+  const fetchProjects = useCallback(async () => {
+    setLoadingProjects(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:3001/projects`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setProjects(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch projects:', error)
+    } finally {
+      setLoadingProjects(false)
+    }
+  }, [])
+
+  /** Adds a new project by directory path. */
+  const handleAddProject = useCallback(async () => {
+    const dir = newProjectPath.trim()
+    if (!dir) return
+
+    try {
+      const apiUrl = `http://${window.location.hostname}:3001/projects`
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directory: dir }),
+      })
+      if (response.ok) {
+        setNewProjectPath('')
+        await fetchProjects()
+      } else {
+        const err = await response.json()
+        addMessage('error', `Failed to add project: ${err.error}`)
+      }
+    } catch (error) {
+      console.error('Failed to add project:', error)
+      addMessage('error', 'Failed to add project')
+    }
+  }, [newProjectPath, fetchProjects, addMessage])
+
+  /** Removes a project by ID. */
+  const handleRemoveProject = useCallback(async (projectId: string) => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:3001/projects/${projectId}`
+      const response = await fetch(apiUrl, { method: 'DELETE' })
+      if (response.ok) {
+        if (activeProject?.id === projectId) {
+          setActiveProject(null)
+          localStorage.removeItem('activeProjectId')
+        }
+        await fetchProjects()
+      }
+    } catch (error) {
+      console.error('Failed to remove project:', error)
+    }
+  }, [activeProject, fetchProjects])
+
+  /** Fetches conversations for a specific project. */
+  const fetchProjectConversations = useCallback(async (projectId: string) => {
+    setLoadingProjectConversations(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:3001/projects/${projectId}/conversations`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setProjectConversations(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch project conversations:', error)
+    } finally {
+      setLoadingProjectConversations(false)
+    }
+  }, [])
+
+  /** Switches to a project: sets it active and resumes its last conversation. */
+  const handleSwitchProject = useCallback(async (project: Project) => {
+    setActiveProject(project)
+    localStorage.setItem('activeProjectId', project.id)
+
+    // Reset current session state
+    setMessages([])
+    setSessionId(null)
+    sessionIdRef.current = null
+    lastMessageIdRef.current = 0
+    localStorage.removeItem('currentSessionId')
+
+    // If the project has a last conversation, resume it
+    if (project.lastConversationId) {
+      wsRef.current?.send(JSON.stringify({ type: 'resume', sessionId: project.lastConversationId, workingDirectory: project.directory }))
+      setSessionId(project.lastConversationId)
+      sessionIdRef.current = project.lastConversationId
+      localStorage.setItem('currentSessionId', project.lastConversationId)
+
+      // Fetch and restore conversation history
+      try {
+        const res = await fetch(`http://${window.location.hostname}:3001/sessions/${project.lastConversationId}/history`)
+        const history: Array<{ type: 'input' | 'output' | 'error' | 'status'; content: string; timestamp: string }> = await res.json()
+        const restoredMessages: Message[] = history.map(msg => ({
+          id: generateId(),
+          type: msg.type,
+          content: msg.content,
+          timestamp: new Date(msg.timestamp),
+        }))
+        setMessages(restoredMessages)
+        addMessage('status', `Switched to project: ${project.name}`)
+      } catch (err) {
+        console.error('Failed to fetch conversation history:', err)
+        addMessage('status', `Switched to project: ${project.name}`)
+      }
+    } else {
+      // No previous conversation, just reset
+      wsRef.current?.send(JSON.stringify({ type: 'reset' }))
+      addMessage('status', `Switched to project: ${project.name} (new conversation)`)
+    }
+
+    setActiveTab('terminal')
+  }, [addMessage])
+
+  /** Deactivates the current project so new conversations aren't associated with any project. */
+  const handleDeactivateProject = useCallback(() => {
+    setActiveProject(null)
+    localStorage.removeItem('activeProjectId')
+
+    // Reset session state
+    setMessages([])
+    setSessionId(null)
+    sessionIdRef.current = null
+    lastMessageIdRef.current = 0
+    localStorage.removeItem('currentSessionId')
+
+    wsRef.current?.send(JSON.stringify({ type: 'reset' }))
+    addMessage('status', 'Project deactivated — new conversations will not be associated with any project')
+    setActiveTab('terminal')
+  }, [addMessage])
+
+  // Keep activeProjectRef in sync with state for use in callbacks
+  useEffect(() => {
+    activeProjectRef.current = activeProject
+  }, [activeProject])
+
   useEffect(() => {
     connect()
 
@@ -470,6 +641,42 @@ function App() {
       fetchSessions()
     }
   }, [sidebarOpen, fetchSessions])
+
+  // Fetch projects on mount and restore active project from localStorage
+  useEffect(() => {
+    fetchProjects().then(async () => {
+      const savedProjectId = localStorage.getItem('activeProjectId')
+      if (savedProjectId) {
+        try {
+          const apiUrl = `http://${window.location.hostname}:3001/projects`
+          const response = await fetch(apiUrl)
+          if (response.ok) {
+            const allProjects: Project[] = await response.json()
+            const saved = allProjects.find(p => p.id === savedProjectId)
+            if (saved) {
+              setActiveProject(saved)
+            }
+          }
+        } catch {
+          // Ignore - projects will load normally
+        }
+      }
+    })
+  }, [fetchProjects])
+
+  // Fetch projects and conversations when projects tab is active
+  useEffect(() => {
+    if (activeTab === 'projects') {
+      fetchProjects()
+    }
+  }, [activeTab, fetchProjects])
+
+  // Fetch conversations when active project changes and projects tab is open
+  useEffect(() => {
+    if (activeProject && activeTab === 'projects') {
+      fetchProjectConversations(activeProject.id)
+    }
+  }, [activeProject, activeTab, fetchProjectConversations])
 
   // Auto-scroll to bottom for terminal messages
   useEffect(() => {
@@ -528,10 +735,15 @@ function App() {
     setInput('')
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
+      const msg: Record<string, string> = {
         type: 'command',
-        content: command
-      }))
+        content: command,
+      }
+      if (activeProject) {
+        msg.workingDirectory = activeProject.directory
+        msg.projectId = activeProject.id
+      }
+      wsRef.current.send(JSON.stringify(msg))
     } else {
       addMessage('error', 'Not connected to server. Retrying connection...')
       connect()
@@ -569,7 +781,11 @@ function App() {
   /** Resumes a previous session and loads its conversation history. */
   const handleSelectSession = async (session: Session) => {
     // Reset current session and set new session ID
-    wsRef.current?.send(JSON.stringify({ type: 'resume', sessionId: session.id }))
+    const resumeMsg: Record<string, string> = { type: 'resume', sessionId: session.id }
+    if (activeProject) {
+      resumeMsg.workingDirectory = activeProject.directory
+    }
+    wsRef.current?.send(JSON.stringify(resumeMsg))
     setSessionId(session.id)
     sessionIdRef.current = session.id
     lastMessageIdRef.current = 0  // Reset message ID for new session
@@ -589,10 +805,10 @@ function App() {
         timestamp: new Date(msg.timestamp),
       }))
       setMessages(restoredMessages)
-      addMessage('status', `Loaded ${history.length} messages from session`)
+      addMessage('status', `Loaded ${history.length} messages from conversation`)
     } catch (err) {
       console.error('Failed to fetch session history:', err)
-      addMessage('status', `Resumed session: ${session.name}`)
+      addMessage('status', `Resumed conversation: ${session.name}`)
     }
   }
 
@@ -843,13 +1059,18 @@ function App() {
       {/* Sidebar */}
       <div className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
         <div className="sidebar-header">
-          <h2>Sessions</h2>
+          <h2>Conversations</h2>
           <button className="close-sidebar" onClick={() => setSidebarOpen(false)}>
             &times;
           </button>
         </div>
+        {activeProject && (
+          <div className="sidebar-project-badge">
+            {activeProject.name}
+          </div>
+        )}
         <button className="new-chat-button" onClick={handleNewChat}>
-          + New Chat
+          + New Conversation
         </button>
         <button
           className="restart-button"
@@ -866,7 +1087,7 @@ function App() {
           {loadingSessions ? (
             <div className="loading-sessions">Loading...</div>
           ) : sessions.length === 0 ? (
-            <div className="no-sessions">No previous sessions</div>
+            <div className="no-sessions">No previous conversations</div>
           ) : (
             sessions.map(session => (
               <button
@@ -896,15 +1117,19 @@ function App() {
               <span></span>
             </button>
             <span className="terminal-dot" style={{ backgroundColor: getStatusColor() }} />
-            {activeTab === 'terminal' ? 'Claude Code Terminal' : 'Server Logs'}
+            {activeTab === 'terminal' ? (activeProject ? `${activeProject.name} — Terminal` : 'Claude Code Terminal')
+              : activeTab === 'projects' ? 'Projects'
+              : activeTab === 'webcams' ? 'Webcams'
+              : 'Server Logs'}
           </div>
           <div className="terminal-controls">
-            {activeTab === 'terminal' && sessionId && <span className="session-id">Session: {sessionId.slice(0, 8)}...</span>}
-            {activeTab === 'terminal' ? (
-              <button onClick={handleReset} className="reset-button" title="Reset session">
+            {activeTab === 'terminal' && sessionId && <span className="session-id">{sessionId.slice(0, 8)}...</span>}
+            {activeTab === 'terminal' && (
+              <button onClick={handleReset} className="reset-button" title="Reset conversation">
                 Reset
               </button>
-            ) : (
+            )}
+            {activeTab === 'logs' && (
               <button onClick={handleClearLogs} className="reset-button" title="Clear logs">
                 Clear
               </button>
@@ -933,6 +1158,13 @@ function App() {
           >
             Webcams
             {activeWebcams.size > 0 && <span className="tab-badge">{activeWebcams.size}</span>}
+          </button>
+          <button
+            className={`tab ${activeTab === 'projects' ? 'active' : ''}`}
+            onClick={() => handleTabChange('projects')}
+          >
+            Projects
+            {projects.length > 0 && <span className="tab-badge">{projects.length}</span>}
           </button>
         </div>
 
@@ -1086,6 +1318,121 @@ function App() {
                 ))}
               </div>
             )}
+        </div>
+
+        {/* Projects tab - always mounted, hidden when inactive */}
+        <div className={`projects-container ${activeTab !== 'projects' ? 'tab-hidden' : ''}`}>
+          <div className="projects-add-form">
+            <h3>Add Project</h3>
+            <div className="projects-add-row">
+              <input
+                type="text"
+                className="projects-path-input"
+                value={newProjectPath}
+                onChange={(e) => setNewProjectPath(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleAddProject() }}
+                placeholder="Enter project directory path..."
+              />
+              <button
+                className="projects-add-button"
+                onClick={handleAddProject}
+                disabled={!newProjectPath.trim()}
+              >
+                Add
+              </button>
+            </div>
+          </div>
+
+          {loadingProjects && projects.length === 0 && (
+            <div className="welcome-message">Loading projects...</div>
+          )}
+
+          {!loadingProjects && projects.length === 0 && (
+            <div className="welcome-message">
+              No projects yet.
+              <br />
+              Add a project directory above to get started.
+            </div>
+          )}
+
+          {projects.length > 0 && (
+            <div className="projects-list">
+              {projects.map(project => (
+                <div
+                  key={project.id}
+                  className={`project-card ${activeProject?.id === project.id ? 'active' : ''}`}
+                >
+                  <div className="project-card-header">
+                    <div className="project-card-name">{project.name}</div>
+                    <div className="project-card-actions">
+                      {activeProject?.id === project.id ? (
+                        <button
+                          className="project-deactivate-button"
+                          onClick={handleDeactivateProject}
+                        >
+                          Deactivate
+                        </button>
+                      ) : (
+                        <button
+                          className="project-switch-button"
+                          onClick={() => handleSwitchProject(project)}
+                        >
+                          Switch
+                        </button>
+                      )}
+                      <button
+                        className="project-remove-button"
+                        onClick={() => handleRemoveProject(project.id)}
+                        title="Remove project"
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  </div>
+                  <div className="project-card-directory">{project.directory}</div>
+                  {project.githubUrl && (
+                    <a
+                      className="project-card-github"
+                      href={project.githubUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      {project.githubUrl.replace('https://github.com/', '')}
+                    </a>
+                  )}
+                  {project.lastConversationId && (
+                    <div className="project-card-conversation">
+                      Last conversation: {project.lastConversationId.slice(0, 8)}...
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {activeProject && (
+            <div className="project-conversations">
+              <h3>Conversations for {activeProject.name}</h3>
+              {loadingProjectConversations ? (
+                <div className="welcome-message">Loading conversations...</div>
+              ) : projectConversations.length === 0 ? (
+                <div className="welcome-message">No conversations yet for this project.</div>
+              ) : (
+                <div className="project-conversations-list">
+                  {projectConversations.map(conv => (
+                    <button
+                      key={conv.id}
+                      className={`session-item ${sessionId === conv.id ? 'active' : ''}`}
+                      onClick={() => handleSelectSession(conv)}
+                    >
+                      <div className="session-name">{conv.name}</div>
+                      <div className="session-meta">{formatDate(conv.lastModified)}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Fullscreen webcam overlay */}

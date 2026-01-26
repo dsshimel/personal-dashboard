@@ -78,6 +78,11 @@ export class ClaudeCodeManager extends EventEmitter {
     return this.sessionId;
   }
 
+  /** Returns the working directory for this manager. */
+  getWorkingDirectory(): string {
+    return this.workingDirectory;
+  }
+
   /**
    * Sets the session ID for resuming a previous conversation.
    *

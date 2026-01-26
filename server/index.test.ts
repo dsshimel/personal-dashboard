@@ -264,9 +264,19 @@ describe('WebSocket Message Handlers', () => {
     aborted = false;
     resetCalled = false;
     lastCommand: string | null = null;
+    private workingDirectory: string;
+
+    constructor(workingDirectory?: string) {
+      super();
+      this.workingDirectory = workingDirectory || '/default';
+    }
 
     getSessionId() {
       return this.sessionId;
+    }
+
+    getWorkingDirectory() {
+      return this.workingDirectory;
     }
 
     setSessionId(id: string) {
@@ -410,6 +420,154 @@ describe('WebSocket Message Handlers', () => {
       const response = JSON.parse(ws.sentMessages[0]);
       expect(response.type).toBe('error');
       expect(response.content).toContain('Unknown message type');
+    });
+  });
+
+  describe('reset clears connectionSessions', () => {
+    test('removes ws from connectionSessions on reset', () => {
+      const connectionSessions = new Map<MockWebSocket, string>();
+      const sessionManagers = new Map<string, MockClaudeCodeManager>();
+
+      // Simulate an active session
+      connectionSessions.set(ws, 'old-session');
+      sessionManagers.set('old-session', manager);
+
+      // Simulate reset handler
+      const oldSessionId = connectionSessions.get(ws);
+      if (oldSessionId) {
+        sessionManagers.delete(oldSessionId);
+      }
+      connectionSessions.delete(ws);
+      manager.reset();
+
+      expect(connectionSessions.has(ws)).toBe(false);
+      expect(sessionManagers.has('old-session')).toBe(false);
+      expect(manager.sessionId).toBeNull();
+    });
+  });
+
+  describe('command with workingDirectory', () => {
+    test('does not carry over old session ID when switching directories', async () => {
+      const connectionSessions = new Map<MockWebSocket, string>();
+
+      // Simulate: manager was created with /project-a, has an active session
+      manager = new MockClaudeCodeManager('/project-a');
+      connectionSessions.set(ws, 'session-from-project-a');
+      manager.setSessionId('session-from-project-a');
+
+      const message = { type: 'command', content: 'hello', workingDirectory: '/project-b' };
+
+      // Simulate the command handler's directory-switch logic
+      if (message.workingDirectory && typeof message.workingDirectory === 'string') {
+        const currentDir = manager.getWorkingDirectory();
+        if (currentDir !== message.workingDirectory) {
+          // Create new manager for different directory (no session ID carryover)
+          manager = new MockClaudeCodeManager(message.workingDirectory);
+        }
+      }
+
+      // The new manager should have no session ID (starts fresh for new project)
+      expect(manager.getWorkingDirectory()).toBe('/project-b');
+      expect(manager.getSessionId()).toBeNull();
+    });
+
+    test('does not create new manager when directory matches', async () => {
+      manager = new MockClaudeCodeManager('/project-a');
+      manager.setSessionId('existing-session');
+      const originalManager = manager;
+
+      const message = { type: 'command', content: 'hello', workingDirectory: '/project-a' };
+
+      if (message.workingDirectory && typeof message.workingDirectory === 'string') {
+        const currentDir = manager.getWorkingDirectory();
+        if (currentDir !== message.workingDirectory) {
+          manager = new MockClaudeCodeManager(message.workingDirectory);
+        }
+      }
+
+      // Same manager, session preserved
+      expect(manager).toBe(originalManager);
+      expect(manager.getSessionId()).toBe('existing-session');
+    });
+  });
+
+  describe('resume with workingDirectory', () => {
+    test('creates new manager when workingDirectory differs', () => {
+      const sessionManagers = new Map<string, MockClaudeCodeManager>();
+
+      manager = new MockClaudeCodeManager('/project-a');
+      const message = { type: 'resume', sessionId: 'new-session', workingDirectory: '/project-b' };
+
+      // Simulate the resume handler (no existing running manager)
+      const existingManager = sessionManagers.get(message.sessionId);
+      if (!existingManager || !existingManager.isRunning()) {
+        if (message.workingDirectory && typeof message.workingDirectory === 'string') {
+          const currentDir = manager.getWorkingDirectory();
+          if (currentDir !== message.workingDirectory) {
+            manager = new MockClaudeCodeManager(message.workingDirectory);
+          }
+        }
+        manager.setSessionId(message.sessionId);
+        sessionManagers.set(message.sessionId, manager);
+      }
+
+      expect(manager.getWorkingDirectory()).toBe('/project-b');
+      expect(manager.getSessionId()).toBe('new-session');
+      expect(sessionManagers.get('new-session')).toBe(manager);
+    });
+
+    test('does not create new manager when workingDirectory matches', () => {
+      const sessionManagers = new Map<string, MockClaudeCodeManager>();
+
+      manager = new MockClaudeCodeManager('/project-a');
+      const originalManager = manager;
+      const message = { type: 'resume', sessionId: 'new-session', workingDirectory: '/project-a' };
+
+      const existingManager = sessionManagers.get(message.sessionId);
+      if (!existingManager || !existingManager.isRunning()) {
+        if (message.workingDirectory && typeof message.workingDirectory === 'string') {
+          const currentDir = manager.getWorkingDirectory();
+          if (currentDir !== message.workingDirectory) {
+            manager = new MockClaudeCodeManager(message.workingDirectory);
+          }
+        }
+        manager.setSessionId(message.sessionId);
+        sessionManagers.set(message.sessionId, manager);
+      }
+
+      expect(manager).toBe(originalManager);
+      expect(manager.getSessionId()).toBe('new-session');
+    });
+
+    test('does not replace running manager even with different workingDirectory', () => {
+      const sessionManagers = new Map<string, MockClaudeCodeManager>();
+
+      // Existing running manager for this session
+      const runningManager = new MockClaudeCodeManager('/project-b');
+      runningManager.processing = true;
+      runningManager.setSessionId('existing-session');
+      sessionManagers.set('existing-session', runningManager);
+
+      manager = new MockClaudeCodeManager('/project-a');
+      const message = { type: 'resume', sessionId: 'existing-session', workingDirectory: '/project-c' };
+
+      const existingManager = sessionManagers.get(message.sessionId);
+      if (existingManager && existingManager.isRunning()) {
+        // Reattach to existing running manager
+        manager = existingManager;
+      } else {
+        if (message.workingDirectory && typeof message.workingDirectory === 'string') {
+          const currentDir = manager.getWorkingDirectory();
+          if (currentDir !== message.workingDirectory) {
+            manager = new MockClaudeCodeManager(message.workingDirectory);
+          }
+        }
+        manager.setSessionId(message.sessionId);
+      }
+
+      // Should reattach to the running manager, not create a new one
+      expect(manager).toBe(runningManager);
+      expect(manager.getWorkingDirectory()).toBe('/project-b');
     });
   });
 });

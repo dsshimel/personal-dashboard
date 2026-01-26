@@ -10,6 +10,7 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { ClaudeCodeManager } from './claude-code.js';
+import { loadProjects, addProject, removeProject, updateProjectConversation, listProjectConversations, addConversationToProject, removeConversationFromProject } from './projects.js';
 import { readdir, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -142,10 +143,12 @@ console.error = (...args: unknown[]) => {
   broadcastLog('error', args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' '));
 };
 
-// Enable CORS for the API endpoints
+// Enable CORS and JSON body parsing
+app.use(express.json());
 app.use((_req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   next();
 });
 
@@ -174,6 +177,94 @@ app.post('/restart', async (_req, res) => {
   await writeFile(signalFile, new Date().toISOString());
 
   console.log('Restart signal sent to watcher');
+});
+
+// List all projects
+app.get('/projects', async (_req, res) => {
+  try {
+    const projects = await loadProjects();
+    res.json(projects);
+  } catch (error) {
+    console.error('Error listing projects:', error);
+    res.status(500).json({ error: 'Failed to list projects' });
+  }
+});
+
+// Add a new project
+app.post('/projects', async (req, res) => {
+  try {
+    const { directory } = req.body;
+    if (!directory || typeof directory !== 'string') {
+      res.status(400).json({ error: 'directory is required' });
+      return;
+    }
+    const project = await addProject(directory);
+    console.log(`Project added: ${project.name} (${project.directory})`);
+    res.json(project);
+  } catch (error) {
+    console.error('Error adding project:', error);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to add project' });
+  }
+});
+
+// Remove a project
+app.delete('/projects/:id', async (req, res) => {
+  try {
+    await removeProject(req.params.id);
+    console.log(`Project removed: ${req.params.id}`);
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error removing project:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to remove project' });
+  }
+});
+
+// List conversations for a project
+app.get('/projects/:id/conversations', async (req, res) => {
+  try {
+    const projects = await loadProjects();
+    const project = projects.find(p => p.id === req.params.id);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found' });
+      return;
+    }
+    const conversations = await listProjectConversations(project.directory);
+    res.json(conversations);
+  } catch (error) {
+    console.error('Error listing project conversations:', error);
+    res.status(500).json({ error: 'Failed to list conversations' });
+  }
+});
+
+// Add a conversation to a project
+app.post('/projects/:id/conversations', async (req, res) => {
+  try {
+    const { conversationId } = req.body;
+    if (!conversationId || typeof conversationId !== 'string') {
+      res.status(400).json({ error: 'conversationId is required' });
+      return;
+    }
+    await addConversationToProject(req.params.id, conversationId);
+    console.log(`Conversation ${conversationId} added to project ${req.params.id}`);
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error adding conversation to project:', error);
+    const statusCode = error instanceof Error && error.message.includes('not found') ? 404 : 400;
+    res.status(statusCode).json({ error: error instanceof Error ? error.message : 'Failed to add conversation' });
+  }
+});
+
+// Remove a conversation from a project
+app.delete('/projects/:id/conversations/:conversationId', async (req, res) => {
+  try {
+    await removeConversationFromProject(req.params.id, req.params.conversationId);
+    console.log(`Conversation ${req.params.conversationId} removed from project ${req.params.id}`);
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error removing conversation from project:', error);
+    const statusCode = error instanceof Error && error.message.includes('not found') ? 404 : 400;
+    res.status(statusCode).json({ error: error instanceof Error ? error.message : 'Failed to remove conversation' });
+  }
 });
 
 // Get conversation history for a session
@@ -455,6 +546,31 @@ wss.on('connection', (ws) => {
       switch (message.type) {
         case 'command':
           if (message.content && typeof message.content === 'string') {
+            // If a workingDirectory is specified (project context), ensure the manager uses it
+            if (message.workingDirectory && typeof message.workingDirectory === 'string') {
+              const currentDir = manager.getWorkingDirectory();
+              if (currentDir !== message.workingDirectory) {
+                // Need a new manager for the different directory
+                cleanupListeners();
+                manager = new ClaudeCodeManager(message.workingDirectory);
+                managers.set(ws, manager);
+                cleanupListeners = attachManagerToWebSocket(
+                  manager,
+                  ws,
+                  () => connectionSessions.get(ws)
+                );
+              }
+            }
+
+            // Track project ID for auto-updating lastConversationId
+            if (message.projectId && typeof message.projectId === 'string') {
+              const projectId = message.projectId;
+              // Listen once for sessionId to update project's lastConversationId
+              manager.once('sessionId', (sessionId: string) => {
+                updateProjectConversation(projectId, sessionId).catch(() => {});
+              });
+            }
+
             console.log('[Server] Sending command to manager:', message.content.substring(0, 100));
             await manager.sendCommand(message.content);
             console.log('[Server] Command completed');
@@ -470,6 +586,7 @@ wss.on('connection', (ws) => {
           if (oldSessionId) {
             sessionManagers.delete(oldSessionId);
           }
+          connectionSessions.delete(ws);
           manager.reset();
           ws.send(JSON.stringify({ type: 'status', content: 'reset' }));
           break;
@@ -491,7 +608,21 @@ wss.on('connection', (ws) => {
                 () => connectionSessions.get(ws)
               );
             } else {
-              // No running manager, just set session ID on current manager
+              // If a workingDirectory is specified, ensure the manager uses it
+              if (message.workingDirectory && typeof message.workingDirectory === 'string') {
+                const currentDir = manager.getWorkingDirectory();
+                if (currentDir !== message.workingDirectory) {
+                  cleanupListeners();
+                  manager = new ClaudeCodeManager(message.workingDirectory);
+                  managers.set(ws, manager);
+                  cleanupListeners = attachManagerToWebSocket(
+                    manager,
+                    ws,
+                    () => connectionSessions.get(ws)
+                  );
+                }
+              }
+              // Set session ID on current manager
               manager.setSessionId(message.sessionId);
               sessionManagers.set(message.sessionId, manager);
             }

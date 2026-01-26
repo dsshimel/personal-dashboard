@@ -63,6 +63,14 @@ Browser
 | `{type: 'webcam-devices', devices}` | server→client | Device list response |
 | `{type: 'webcam-frame', deviceId, data}` | server→client | Base64 JPEG frame |
 
+## Workflow
+
+Before starting non-trivial changes, enter plan mode and ask the user clarifying questions about requirements, edge cases, and preferred approach. Get explicit confirmation on the plan before writing any code.
+
+## Testing
+
+When adding new features or changing existing behavior, add corresponding tests in the relevant `server/*.test.ts` file. Run tests with `bun test server/` to verify.
+
 ## Session Management
 
 - Sessions stored as JSONL in `~/.claude/projects/<project>/<session-id>.jsonl`
@@ -78,3 +86,9 @@ Browser
 | `/sessions/:id/history` | GET | Get conversation history |
 | `/sessions/:id/messages?since=N` | GET | Get messages since ID (reconnection) |
 | `/restart` | POST | Trigger server restart |
+| `/projects` | GET | List all projects |
+| `/projects` | POST | Add a new project (body: `{directory}`) |
+| `/projects/:id` | DELETE | Remove a project |
+| `/projects/:id/conversations` | GET | List conversations for a project |
+| `/projects/:id/conversations` | POST | Add conversation to project (body: `{conversationId}`) |
+| `/projects/:id/conversations/:convId` | DELETE | Remove conversation from project |
