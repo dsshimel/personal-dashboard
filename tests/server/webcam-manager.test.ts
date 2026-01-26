@@ -240,11 +240,11 @@ describe('WebcamManager', () => {
   });
 
   describe('selectNativeMode', () => {
-    let selectNativeMode: (capabilities: DeviceMode[]) => { width: number; height: number; fps: number } | null;
+    let selectNativeMode: (capabilities: DeviceMode[]) => { width: number; height: number; fps: number; pixelFormat: string } | null;
 
     beforeEach(() => {
       selectNativeMode = (manager as unknown as {
-        selectNativeMode: (capabilities: DeviceMode[]) => { width: number; height: number; fps: number } | null
+        selectNativeMode: (capabilities: DeviceMode[]) => { width: number; height: number; fps: number; pixelFormat: string } | null
       }).selectNativeMode.bind(manager);
     });
 
@@ -258,7 +258,7 @@ describe('WebcamManager', () => {
         { pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 },
       ];
       const result = selectNativeMode(caps);
-      expect(result).toEqual({ width: 1280, height: 720, fps: 30 });
+      expect(result).toEqual({ width: 1280, height: 720, fps: 30, pixelFormat: 'mjpeg' });
     });
 
     test('selects highest resolution among MJPEG modes', () => {
@@ -268,7 +268,7 @@ describe('WebcamManager', () => {
         { pixelFormat: 'mjpeg', width: 960, height: 540, maxFps: 30 },
       ];
       const result = selectNativeMode(caps);
-      expect(result).toEqual({ width: 1280, height: 720, fps: 30 });
+      expect(result).toEqual({ width: 1280, height: 720, fps: 30, pixelFormat: 'mjpeg' });
     });
 
     test('selects highest fps when resolutions are equal', () => {
@@ -277,7 +277,7 @@ describe('WebcamManager', () => {
         { pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 },
       ];
       const result = selectNativeMode(caps);
-      expect(result).toEqual({ width: 1280, height: 720, fps: 30 });
+      expect(result).toEqual({ width: 1280, height: 720, fps: 30, pixelFormat: 'mjpeg' });
     });
 
     test('falls back to raw formats when no MJPEG modes', () => {
@@ -286,7 +286,7 @@ describe('WebcamManager', () => {
         { pixelFormat: 'yuyv422', width: 320, height: 240, maxFps: 30 },
       ];
       const result = selectNativeMode(caps);
-      expect(result).toEqual({ width: 640, height: 480, fps: 30 });
+      expect(result).toEqual({ width: 640, height: 480, fps: 30, pixelFormat: 'yuyv422' });
     });
   });
 
@@ -335,7 +335,7 @@ describe('WebcamManager', () => {
       expect(devices[0].type).toBe('video');
       expect(devices[0].capabilities).toBeDefined();
       expect(devices[0].capabilities!.length).toBe(2);
-      expect(devices[0].nativeMode).toEqual({ width: 1280, height: 720, fps: 30 });
+      expect(devices[0].nativeMode).toEqual({ width: 1280, height: 720, fps: 30, pixelFormat: 'mjpeg' });
     });
 
     test('returns empty array when no devices found', async () => {
@@ -418,7 +418,7 @@ describe('WebcamManager', () => {
       const caps = (manager as unknown as { deviceCapabilities: Map<string, unknown> }).deviceCapabilities;
       caps.set('My Webcam', {
         capabilities: [{ pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 }],
-        nativeMode: { width: 1280, height: 720, fps: 30 }
+        nativeMode: { width: 1280, height: 720, fps: 30, pixelFormat: 'mjpeg' }
       });
 
       const { fn, getCapturedArgs } = installMockSpawn({ captureArgs: true });
@@ -428,23 +428,27 @@ describe('WebcamManager', () => {
       expect(result).toBe(true);
       expect(fn).toHaveBeenCalled();
       const args = getCapturedArgs();
-      // Input should be native resolution
+      // Should force MJPEG input codec to avoid H.264 software decode
+      expect(args).toContain('-vcodec');
+      expect(args).toContain('mjpeg');
+      // Input should be native resolution and framerate
       expect(args).toContain('-video_size');
       expect(args).toContain('1280x720');
+      expect(args).toContain('-framerate');
+      expect(args).toContain('30');
       expect(args).toContain('video=My Webcam');
       // Grid mode should have scale filter (half native: 1280/2=640, 720/2=360)
       expect(args).toContain('-vf');
       expect(args).toContain('scale=640:360');
       expect(args).toContain('-r');
       expect(args).toContain('15');
-      expect(args).toContain('mjpeg');
     });
 
     test('spawns FFmpeg in fullscreen mode without scale filter', async () => {
       const caps = (manager as unknown as { deviceCapabilities: Map<string, unknown> }).deviceCapabilities;
       caps.set('My Webcam', {
         capabilities: [{ pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 }],
-        nativeMode: { width: 1280, height: 720, fps: 30 }
+        nativeMode: { width: 1280, height: 720, fps: 30, pixelFormat: 'mjpeg' }
       });
 
       const { fn, getCapturedArgs } = installMockSpawn({ captureArgs: true });
@@ -453,8 +457,11 @@ describe('WebcamManager', () => {
 
       expect(result).toBe(true);
       const args = getCapturedArgs();
-      // Input should be native resolution
+      // Should force MJPEG input codec
+      expect(args).toContain('-vcodec');
+      // Input should be native resolution and framerate
       expect(args).toContain('1280x720');
+      expect(args).toContain('-framerate');
       // Fullscreen mode should NOT have scale filter
       expect(args).not.toContain('-vf');
       // Frame rate should be native
@@ -466,7 +473,7 @@ describe('WebcamManager', () => {
       const caps = (manager as unknown as { deviceCapabilities: Map<string, unknown> }).deviceCapabilities;
       caps.set('Small Cam', {
         capabilities: [{ pixelFormat: 'mjpeg', width: 640, height: 480, maxFps: 30 }],
-        nativeMode: { width: 640, height: 480, fps: 30 }
+        nativeMode: { width: 640, height: 480, fps: 30, pixelFormat: 'mjpeg' }
       });
 
       const { getCapturedArgs } = installMockSpawn({ captureArgs: true });
@@ -494,6 +501,8 @@ describe('WebcamManager', () => {
       expect(args).toContain('scale=320:240');
       expect(args).toContain('-r');
       expect(args).toContain('15');
+      // Should NOT force vcodec when no capabilities are known
+      expect(args).not.toContain('-vcodec');
     });
 
     test('emits stream-started event', async () => {

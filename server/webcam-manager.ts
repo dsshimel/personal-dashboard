@@ -37,7 +37,7 @@ export interface WebcamDevice {
   /** Supported modes discovered via FFmpeg -list_options. */
   capabilities?: DeviceMode[];
   /** The best native mode (highest MJPEG resolution and fps). */
-  nativeMode?: { width: number; height: number; fps: number };
+  nativeMode?: { width: number; height: number; fps: number; pixelFormat: string };
 }
 
 /** Output display mode for the stream. */
@@ -78,7 +78,7 @@ export class WebcamManager extends EventEmitter {
   /** JPEG quality (2-31, lower is better quality). */
   private quality: number;
   /** Cache of device capabilities to avoid repeated FFmpeg queries. */
-  private deviceCapabilities: Map<string, { capabilities: DeviceMode[]; nativeMode: { width: number; height: number; fps: number } | null }> = new Map();
+  private deviceCapabilities: Map<string, { capabilities: DeviceMode[]; nativeMode: { width: number; height: number; fps: number; pixelFormat: string } | null }> = new Map();
 
   /**
    * Creates a new WebcamManager.
@@ -213,7 +213,7 @@ export class WebcamManager extends EventEmitter {
    * @param capabilities - Array of supported modes.
    * @returns The best mode, or null if no capabilities.
    */
-  private selectNativeMode(capabilities: DeviceMode[]): { width: number; height: number; fps: number } | null {
+  private selectNativeMode(capabilities: DeviceMode[]): { width: number; height: number; fps: number; pixelFormat: string } | null {
     if (capabilities.length === 0) return null;
 
     const mjpegModes = capabilities.filter(m => m.pixelFormat === 'mjpeg');
@@ -228,7 +228,7 @@ export class WebcamManager extends EventEmitter {
     });
 
     const best = sorted[0];
-    return { width: best.width, height: best.height, fps: best.maxFps };
+    return { width: best.width, height: best.height, fps: best.maxFps, pixelFormat: best.pixelFormat };
   }
 
   /**
@@ -268,10 +268,14 @@ export class WebcamManager extends EventEmitter {
       log(`[WebcamManager] Starting stream for: ${deviceId}, input: ${inputResolution}@${inputFps}fps, mode: ${outputMode}`);
 
       // FFmpeg command: capture at native resolution, apply output filters
-      // -video_size must come BEFORE -i to set the capture resolution from the camera
+      // -video_size and -vcodec must come BEFORE -i to set the capture format from the camera
+      // Force MJPEG input when available to prevent H.264 software decode (which can saturate CPU)
+      const inputFormat = nativeMode?.pixelFormat;
       const args: string[] = [
         '-f', 'dshow',
+        ...(inputFormat === 'mjpeg' ? ['-vcodec', 'mjpeg'] : []),
         '-video_size', inputResolution,
+        '-framerate', String(inputFps),
         '-i', `video=${deviceId}`,
       ];
 
