@@ -111,6 +111,7 @@ function App() {
 
   // Server logs state
   const [logMessages, setLogMessages] = useState<LogMessage[]>([])
+  const [logLevelFilter, setLogLevelFilter] = useState<'error' | 'warn' | 'info'>('error')
 
   // Session sidebar state
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -902,6 +903,11 @@ function App() {
     })
   }
 
+  const LOG_LEVEL_PRIORITY = { error: 0, warn: 1, info: 2 } as const
+  const filteredLogMessages = logMessages.filter(
+    log => LOG_LEVEL_PRIORITY[log.level] <= LOG_LEVEL_PRIORITY[logLevelFilter]
+  )
+
   /** Clears all server log messages from the logs tab. */
   const handleClearLogs = () => {
     setLogMessages([])
@@ -1163,9 +1169,21 @@ function App() {
               </button>
             )}
             {activeTab === 'logs' && (
-              <button onClick={handleClearLogs} className="reset-button" title="Clear logs">
-                Clear
-              </button>
+              <>
+                <select
+                  className="log-level-select"
+                  value={logLevelFilter}
+                  onChange={(e) => setLogLevelFilter(e.target.value as 'error' | 'warn' | 'info')}
+                  title="Minimum log level to display"
+                >
+                  <option value="error">Errors only</option>
+                  <option value="warn">Warn+</option>
+                  <option value="info">All</option>
+                </select>
+                <button onClick={handleClearLogs} className="reset-button" title="Clear logs">
+                  Clear
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -1183,7 +1201,7 @@ function App() {
             onClick={() => handleTabChange('logs')}
           >
             Server Logs
-            {logMessages.length > 0 && <span className="tab-badge">{logMessages.length}</span>}
+            {filteredLogMessages.length > 0 && <span className="tab-badge">{filteredLogMessages.length}</span>}
           </button>
           <button
             className={`tab ${activeTab === 'webcams' ? 'active' : ''}`}
@@ -1247,14 +1265,15 @@ function App() {
 
         {/* Logs output - always mounted, hidden when inactive */}
         <div className={`logs-output ${activeTab !== 'logs' ? 'tab-hidden' : ''}`} ref={logsOutputRef} onScroll={handleLogsScroll}>
-          {logMessages.length === 0 && (
+          {filteredLogMessages.length === 0 && (
             <div className="welcome-message">
-              No server logs yet.
-              <br />
-              Logs will appear here as the server processes requests.
+              {logMessages.length === 0
+                ? <>No server logs yet.<br />Logs will appear here as the server processes requests.</>
+                : <>No logs at this level. Try changing the filter to see more.</>
+              }
             </div>
           )}
-          {logMessages.map(log => (
+          {filteredLogMessages.map(log => (
             <div key={log.id} className={`log-message log-${log.level}`}>
               <span className="log-timestamp">[{formatLogTime(log.timestamp)}]</span>
               <span className={`log-level log-level-${log.level}`}>[{log.level.toUpperCase()}]</span>
