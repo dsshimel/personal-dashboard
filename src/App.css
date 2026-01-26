@@ -76,28 +76,6 @@
   background-color: #22c55e;
 }
 
-.restart-button {
-  margin: 0 12px 12px;
-  padding: 12px 16px;
-  background-color: #c084fc;
-  border: none;
-  border-radius: 6px;
-  color: #1a1a2e;
-  font-weight: 600;
-  font-size: 14px;
-  cursor: pointer;
-  transition: background-color 0.2s;
-}
-
-.restart-button:hover:not(:disabled) {
-  background-color: #a855f7;
-}
-
-.restart-button:disabled {
-  background-color: #4a5568;
-  color: #a0a0a0;
-  cursor: not-allowed;
-}
 
 .sessions-list {
   flex: 1;

@@ -1101,17 +1101,6 @@ function App() {
         <button className="new-chat-button" onClick={handleNewChat}>
           + New Conversation
         </button>
-        <button
-          className="restart-button"
-          onClick={handleRestart}
-          disabled={status === 'restarting'}
-        >
-          {restartCountdown !== null
-            ? `Refreshing in ${restartCountdown}...`
-            : status === 'restarting'
-              ? 'Restarting...'
-              : 'Restart Server'}
-        </button>
         <div className="sessions-list">
           {loadingSessions ? (
             <div className="loading-sessions">Loading...</div>
@@ -1154,8 +1143,17 @@ function App() {
           <div className="terminal-controls">
             {activeTab === 'terminal' && sessionId && <span className="session-id">{sessionId.slice(0, 8)}...</span>}
             {activeTab === 'terminal' && (
-              <button onClick={handleReset} className="reset-button" title="Reset conversation">
-                Reset
+              <button
+                onClick={handleRestart}
+                className="reset-button"
+                title="Restart server"
+                disabled={status === 'restarting'}
+              >
+                {restartCountdown !== null
+                  ? `Refreshing in ${restartCountdown}...`
+                  : status === 'restarting'
+                    ? 'Restarting...'
+                    : 'Restart'}
               </button>
             )}
             {activeTab === 'logs' && (

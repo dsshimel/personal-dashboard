@@ -458,14 +458,14 @@ describe('Projects Module', () => {
 describe('Projects Module - ClaudeCodeManager integration', () => {
   // Test that getWorkingDirectory() was added to ClaudeCodeManager
   test('ClaudeCodeManager has getWorkingDirectory method', async () => {
-    const { ClaudeCodeManager } = await import('./claude-code');
+    const { ClaudeCodeManager } = await import('../../server/claude-code');
     const manager = new ClaudeCodeManager('/test/directory');
 
     expect(manager.getWorkingDirectory()).toBe('/test/directory');
   });
 
   test('ClaudeCodeManager getWorkingDirectory returns default cwd when no arg', async () => {
-    const { ClaudeCodeManager } = await import('./claude-code');
+    const { ClaudeCodeManager } = await import('../../server/claude-code');
     const manager = new ClaudeCodeManager();
 
     expect(manager.getWorkingDirectory()).toBe(process.cwd());
