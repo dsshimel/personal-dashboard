@@ -10,13 +10,20 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { ClaudeCodeManager } from './claude-code.js';
-import { loadProjects, addProject, removeProject, updateProjectConversation, listProjectConversations, addConversationToProject, removeConversationFromProject } from './projects.js';
+import { loadProjects, addProject, removeProject, updateProjectConversation, listProjectConversations, addConversationToProject, removeConversationFromProject, initProjectsDb } from './projects.js';
+import { initCrmDb, listContacts, createContact, updateContact, deleteContact, listInteractions, createInteraction, deleteInteraction } from './crm.js';
+import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
 import { readdir, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
 
 initLogger('main');
+
+// Initialize the shared SQLite database
+const db = initDb();
+initProjectsDb(db);
+initCrmDb(db);
 
 const PORT = process.env.PORT || 4001;
 const WORKING_DIR = process.env.WORKING_DIR || process.cwd();
@@ -153,7 +160,7 @@ app.use(express.json());
 app.use((_req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   next();
 });
 
@@ -269,6 +276,102 @@ app.delete('/projects/:id/conversations/:conversationId', async (req, res) => {
     console.error('Error removing conversation from project:', error);
     const statusCode = error instanceof Error && error.message.includes('not found') ? 404 : 400;
     res.status(statusCode).json({ error: error instanceof Error ? error.message : 'Failed to remove conversation' });
+  }
+});
+
+// --- CRM Endpoints ---
+
+// List all contacts (sorted by staleness)
+app.get('/crm/contacts', (_req, res) => {
+  try {
+    const contacts = listContacts();
+    res.json(contacts);
+  } catch (error) {
+    console.error('Error listing contacts:', error);
+    res.status(500).json({ error: 'Failed to list contacts' });
+  }
+});
+
+// Create a new contact
+app.post('/crm/contacts', (req, res) => {
+  try {
+    const { name, email, phone, socialHandles } = req.body;
+    if (!name || typeof name !== 'string') {
+      res.status(400).json({ error: 'name is required' });
+      return;
+    }
+    const contact = createContact({ name, email, phone, socialHandles });
+    console.log(`Contact created: ${contact.name}`);
+    res.json(contact);
+  } catch (error) {
+    console.error('Error creating contact:', error);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to create contact' });
+  }
+});
+
+// Update a contact
+app.put('/crm/contacts/:id', (req, res) => {
+  try {
+    const { name, email, phone, socialHandles } = req.body;
+    const contact = updateContact(req.params.id, { name, email, phone, socialHandles });
+    console.log(`Contact updated: ${contact.name}`);
+    res.json(contact);
+  } catch (error) {
+    console.error('Error updating contact:', error);
+    const statusCode = error instanceof Error && error.message.includes('not found') ? 404 : 400;
+    res.status(statusCode).json({ error: error instanceof Error ? error.message : 'Failed to update contact' });
+  }
+});
+
+// Delete a contact
+app.delete('/crm/contacts/:id', (req, res) => {
+  try {
+    deleteContact(req.params.id);
+    console.log(`Contact deleted: ${req.params.id}`);
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error deleting contact:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to delete contact' });
+  }
+});
+
+// List interactions for a contact
+app.get('/crm/contacts/:id/interactions', (req, res) => {
+  try {
+    const interactions = listInteractions(req.params.id);
+    res.json(interactions);
+  } catch (error) {
+    console.error('Error listing interactions:', error);
+    res.status(500).json({ error: 'Failed to list interactions' });
+  }
+});
+
+// Log a new interaction
+app.post('/crm/contacts/:id/interactions', (req, res) => {
+  try {
+    const { note, occurredAt } = req.body;
+    if (!note || typeof note !== 'string') {
+      res.status(400).json({ error: 'note is required' });
+      return;
+    }
+    const interaction = createInteraction(req.params.id, { note, occurredAt });
+    console.log(`Interaction logged for contact ${req.params.id}`);
+    res.json(interaction);
+  } catch (error) {
+    console.error('Error creating interaction:', error);
+    const statusCode = error instanceof Error && error.message.includes('not found') ? 404 : 400;
+    res.status(statusCode).json({ error: error instanceof Error ? error.message : 'Failed to create interaction' });
+  }
+});
+
+// Delete an interaction
+app.delete('/crm/interactions/:id', (req, res) => {
+  try {
+    deleteInteraction(req.params.id);
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error deleting interaction:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to delete interaction' });
   }
 });
 
@@ -567,6 +670,17 @@ wss.on('connection', (ws) => {
               }
             }
 
+            // Parse images for direct pass-through to Claude via stream-json
+            const images = Array.isArray(message.images) && message.images.length > 0
+              ? message.images
+                  .filter((img: unknown) => img && typeof (img as { data?: unknown }).data === 'string' && typeof (img as { name?: unknown }).name === 'string')
+                  .map((img: { data: string; name: string }) => ({
+                    data: img.data,
+                    name: img.name,
+                    mimeType: 'image/png',
+                  }))
+              : undefined;
+
             // Track project ID for auto-updating lastConversationId
             if (message.projectId && typeof message.projectId === 'string') {
               const projectId = message.projectId;
@@ -576,8 +690,8 @@ wss.on('connection', (ws) => {
               });
             }
 
-            console.log('[Server] Sending command to manager:', message.content.substring(0, 100));
-            await manager.sendCommand(message.content);
+            console.log('[Server] Sending command to manager:', message.content.substring(0, 100), 'with', images?.length || 0, 'images');
+            await manager.sendCommand(message.content, images);
             console.log('[Server] Command completed');
           }
           break;

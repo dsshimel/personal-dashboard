@@ -83,13 +83,15 @@ interface WebcamDevice {
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 
 /** Currently active UI tab. */
-type Section = 'terminal' | 'hardware' | 'diagnostics'
+type Section = 'crm' | 'terminal' | 'hardware' | 'diagnostics'
 type TerminalTab = 'terminal' | 'projects' | 'conversations'
 type HardwareTab = 'webcams'
 type DiagnosticsTab = 'logs'
-type SubTab = TerminalTab | HardwareTab | DiagnosticsTab
+type CrmTab = 'contacts'
+type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab
 
 const SECTION_TABS: Record<Section, SubTab[]> = {
+  crm: ['contacts'],
   terminal: ['terminal', 'projects', 'conversations'],
   hardware: ['webcams'],
   diagnostics: ['logs'],
@@ -101,12 +103,36 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
   conversations: 'Conversations',
   webcams: 'Webcams',
   logs: 'Server Logs',
+  contacts: 'Contacts',
 }
 
 const SECTION_LABELS: Record<Section, string> = {
+  crm: 'Friend CRM',
   terminal: 'Terminal',
   hardware: 'Hardware',
   diagnostics: 'Diagnostics',
+}
+
+/** Represents a CRM contact. */
+interface CrmContact {
+  id: string
+  name: string
+  email: string | null
+  phone: string | null
+  socialHandles: string | null
+  createdAt: string
+  updatedAt: string
+  lastInteraction: string | null
+  interactionCount: number
+}
+
+/** Represents a CRM interaction log entry. */
+interface CrmInteraction {
+  id: string
+  contactId: string
+  note: string
+  occurredAt: string
+  createdAt: string
 }
 
 /** Message stored in server buffer for reconnection support. */
@@ -129,6 +155,12 @@ function App() {
   // Terminal state
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
+  const [pendingImages, setPendingImages] = useState<Array<{
+    id: string
+    data: string  // base64 data (without data URL prefix)
+    name: string  // generated filename
+    preview: string  // data URL for display
+  }>>([])
   const [status, setStatus] = useState<ConnectionStatus>('disconnected')
   const [currentTool, setCurrentTool] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -167,6 +199,20 @@ function App() {
   const [loadingProjects, setLoadingProjects] = useState(false)
   const [projectConversations, setProjectConversations] = useState<Session[]>([])
   const [loadingProjectConversations, setLoadingProjectConversations] = useState(false)
+
+  // CRM state
+  const [crmContacts, setCrmContacts] = useState<CrmContact[]>([])
+  const [selectedContact, setSelectedContact] = useState<CrmContact | null>(null)
+  const [contactInteractions, setContactInteractions] = useState<CrmInteraction[]>([])
+  const [loadingContacts, setLoadingContacts] = useState(false)
+  const [loadingInteractions, setLoadingInteractions] = useState(false)
+  const [showAddContact, setShowAddContact] = useState(false)
+  const [editingContact, setEditingContact] = useState<CrmContact | null>(null)
+  const [newContactName, setNewContactName] = useState('')
+  const [newContactEmail, setNewContactEmail] = useState('')
+  const [newContactPhone, setNewContactPhone] = useState('')
+  const [newContactSocial, setNewContactSocial] = useState('')
+  const [newInteractionNote, setNewInteractionNote] = useState('')
 
   // Refs for mutable values that shouldn't trigger re-renders
   const isRestartingRef = useRef(false)
@@ -588,6 +634,183 @@ function App() {
     }
   }, [])
 
+  // --- CRM data fetching ---
+
+  /** Fetches all contacts from the CRM API. */
+  const fetchContacts = useCallback(async () => {
+    setLoadingContacts(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/crm/contacts`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setCrmContacts(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch contacts:', error)
+    } finally {
+      setLoadingContacts(false)
+    }
+  }, [])
+
+  /** Fetches interactions for a specific contact. */
+  const fetchInteractions = useCallback(async (contactId: string) => {
+    setLoadingInteractions(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/crm/contacts/${contactId}/interactions`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setContactInteractions(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch interactions:', error)
+    } finally {
+      setLoadingInteractions(false)
+    }
+  }, [])
+
+  /** Creates a new contact. */
+  const handleCreateContact = useCallback(async () => {
+    const name = newContactName.trim()
+    if (!name) return
+
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/crm/contacts`
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          email: newContactEmail.trim() || null,
+          phone: newContactPhone.trim() || null,
+          socialHandles: newContactSocial.trim() || null,
+        }),
+      })
+      if (response.ok) {
+        setNewContactName('')
+        setNewContactEmail('')
+        setNewContactPhone('')
+        setNewContactSocial('')
+        setShowAddContact(false)
+        await fetchContacts()
+      }
+    } catch (error) {
+      console.error('Failed to create contact:', error)
+    }
+  }, [newContactName, newContactEmail, newContactPhone, newContactSocial, fetchContacts])
+
+  /** Updates an existing contact. */
+  const handleUpdateContact = useCallback(async () => {
+    if (!editingContact) return
+    const name = newContactName.trim()
+    if (!name) return
+
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/crm/contacts/${editingContact.id}`
+      const response = await fetch(apiUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          email: newContactEmail.trim() || null,
+          phone: newContactPhone.trim() || null,
+          socialHandles: newContactSocial.trim() || null,
+        }),
+      })
+      if (response.ok) {
+        const updated = await response.json()
+        setSelectedContact(updated)
+        setEditingContact(null)
+        setNewContactName('')
+        setNewContactEmail('')
+        setNewContactPhone('')
+        setNewContactSocial('')
+        await fetchContacts()
+      }
+    } catch (error) {
+      console.error('Failed to update contact:', error)
+    }
+  }, [editingContact, newContactName, newContactEmail, newContactPhone, newContactSocial, fetchContacts])
+
+  /** Deletes a contact. */
+  const handleDeleteContact = useCallback(async (contactId: string) => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/crm/contacts/${contactId}`
+      const response = await fetch(apiUrl, { method: 'DELETE' })
+      if (response.ok) {
+        setSelectedContact(null)
+        await fetchContacts()
+      }
+    } catch (error) {
+      console.error('Failed to delete contact:', error)
+    }
+  }, [fetchContacts])
+
+  /** Logs a new interaction for a contact. */
+  const handleLogInteraction = useCallback(async (contactId: string) => {
+    const note = newInteractionNote.trim()
+    if (!note) return
+
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/crm/contacts/${contactId}/interactions`
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note }),
+      })
+      if (response.ok) {
+        setNewInteractionNote('')
+        await fetchInteractions(contactId)
+        await fetchContacts() // Refresh staleness info
+      }
+    } catch (error) {
+      console.error('Failed to log interaction:', error)
+    }
+  }, [newInteractionNote, fetchInteractions, fetchContacts])
+
+  /** Deletes an interaction. */
+  const handleDeleteInteraction = useCallback(async (interactionId: string, contactId: string) => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/crm/interactions/${interactionId}`
+      const response = await fetch(apiUrl, { method: 'DELETE' })
+      if (response.ok) {
+        await fetchInteractions(contactId)
+        await fetchContacts() // Refresh staleness info
+      }
+    } catch (error) {
+      console.error('Failed to delete interaction:', error)
+    }
+  }, [fetchInteractions, fetchContacts])
+
+  /** Opens the edit form for a contact. */
+  const handleStartEdit = useCallback((contact: CrmContact) => {
+    setEditingContact(contact)
+    setNewContactName(contact.name)
+    setNewContactEmail(contact.email || '')
+    setNewContactPhone(contact.phone || '')
+    setNewContactSocial(contact.socialHandles || '')
+  }, [])
+
+  /** Cancels editing or adding a contact. */
+  const handleCancelContactForm = useCallback(() => {
+    setShowAddContact(false)
+    setEditingContact(null)
+    setNewContactName('')
+    setNewContactEmail('')
+    setNewContactPhone('')
+    setNewContactSocial('')
+  }, [])
+
+  /** Returns staleness level based on last interaction date. */
+  const getStaleness = useCallback((lastInteraction: string | null): 'fresh' | 'stale' | 'very-stale' => {
+    if (!lastInteraction) return 'very-stale'
+    const daysSince = Math.floor((Date.now() - new Date(lastInteraction).getTime()) / 86400000)
+    if (daysSince < 7) return 'fresh'
+    if (daysSince < 30) return 'stale'
+    return 'very-stale'
+  }, [])
+
   /** Switches to a project: sets it active and resumes its last conversation. */
   const handleSwitchProject = useCallback(async (project: Project) => {
     setActiveProject(project)
@@ -708,6 +931,32 @@ function App() {
     }
   }, [activeProject, activeSubTab, fetchProjectConversations])
 
+  // Fetch contacts when CRM tab is active
+  useEffect(() => {
+    if (activeSubTab === 'contacts') {
+      fetchContacts()
+    }
+  }, [activeSubTab, fetchContacts])
+
+  // Keep selectedContact in sync with the contacts list (e.g. after interaction count changes)
+  useEffect(() => {
+    if (selectedContact) {
+      const updated = crmContacts.find(c => c.id === selectedContact.id)
+      if (updated && JSON.stringify(updated) !== JSON.stringify(selectedContact)) {
+        setSelectedContact(updated)
+      }
+    }
+  }, [crmContacts])
+
+  // Fetch interactions when a contact is selected
+  useEffect(() => {
+    if (selectedContact) {
+      fetchInteractions(selectedContact.id)
+    } else {
+      setContactInteractions([])
+    }
+  }, [selectedContact, fetchInteractions])
+
   // Index of the message that should get the gold "ready" highlight.
   // Prefer the last output message; fall back to the last non-status message.
   const readyMessageIndex = useMemo(() => {
@@ -770,19 +1019,33 @@ function App() {
 
   /** Sends the current input as a command to Claude via WebSocket. */
   const sendCommand = () => {
-    if (!input.trim()) return
+    if (!input.trim() && pendingImages.length === 0) return
 
     const command = input.trim()
-    addMessage('input', command)
+    const images = pendingImages.map(img => ({
+      data: img.data,
+      name: img.name
+    }))
+
+    // Display user message with image indicators
+    const displayContent = images.length > 0
+      ? `${command}${command ? '\n' : ''}[${images.length} image${images.length > 1 ? 's' : ''} attached]`
+      : command
+    addMessage('input', displayContent)
+
     setInput('')
+    setPendingImages([])
     if (inputRef.current) {
       inputRef.current.style.height = 'auto'
     }
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const msg: Record<string, string> = {
+      const msg: Record<string, unknown> = {
         type: 'command',
         content: command,
+      }
+      if (images.length > 0) {
+        msg.images = images
       }
       if (activeProject) {
         msg.workingDirectory = activeProject.directory
@@ -807,6 +1070,40 @@ function App() {
     }
   }
 
+  /** Handles paste events to detect and capture images from clipboard. */
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items
+    if (!items) return
+
+    const imageItems = Array.from(items).filter(item =>
+      item.type.startsWith('image/')
+    )
+
+    if (imageItems.length === 0) return
+
+    e.preventDefault() // Prevent default paste of image data
+
+    for (const item of imageItems) {
+      const file = item.getAsFile()
+      if (!file) continue
+
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = reader.result as string
+        // Extract base64 data (remove "data:image/png;base64," prefix)
+        const base64 = dataUrl.split(',')[1]
+
+        setPendingImages(prev => [...prev, {
+          id: generateId(),
+          data: base64,
+          name: `paste-${Date.now()}-${prev.length}.png`,
+          preview: dataUrl
+        }])
+      }
+      reader.readAsDataURL(file)
+    }
+  }, [])
+
   /** Resets the current session and clears message history. */
   const handleReset = () => {
     wsRef.current?.send(JSON.stringify({ type: 'reset' }))
@@ -821,6 +1118,7 @@ function App() {
   const handleNewChat = () => {
     handleReset()
     setSidebarOpen(false)
+    setActiveSubTab('terminal')
   }
 
   /** Resumes a previous session and loads its conversation history. */
@@ -1539,6 +1837,193 @@ function App() {
           )}
         </div>
 
+        {/* CRM Contacts - always mounted, hidden when inactive */}
+        <div className={`crm-container ${activeSubTab !== 'contacts' ? 'tab-hidden' : ''}`}>
+          {/* Add/Edit Contact Form */}
+          {(showAddContact || editingContact) ? (
+            <div className="crm-form">
+              <h3>{editingContact ? 'Edit Contact' : 'Add Contact'}</h3>
+              <div className="crm-form-fields">
+                <input
+                  className="crm-input"
+                  type="text"
+                  placeholder="Name (required)"
+                  value={newContactName}
+                  onChange={e => setNewContactName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && (editingContact ? handleUpdateContact() : handleCreateContact())}
+                  autoFocus
+                />
+                <input
+                  className="crm-input"
+                  type="email"
+                  placeholder="Email"
+                  value={newContactEmail}
+                  onChange={e => setNewContactEmail(e.target.value)}
+                />
+                <input
+                  className="crm-input"
+                  type="tel"
+                  placeholder="Phone"
+                  value={newContactPhone}
+                  onChange={e => setNewContactPhone(e.target.value)}
+                />
+                <input
+                  className="crm-input"
+                  type="text"
+                  placeholder="Social handles (e.g. @twitter, linkedin.com/in/x)"
+                  value={newContactSocial}
+                  onChange={e => setNewContactSocial(e.target.value)}
+                />
+              </div>
+              <div className="crm-form-actions">
+                <button
+                  className="crm-save-button"
+                  onClick={editingContact ? handleUpdateContact : handleCreateContact}
+                  disabled={!newContactName.trim()}
+                >
+                  {editingContact ? 'Save' : 'Add'}
+                </button>
+                <button className="crm-cancel-button" onClick={handleCancelContactForm}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : selectedContact ? (
+            /* Contact Detail View */
+            <div className="crm-detail">
+              <div className="crm-detail-header">
+                <button className="crm-back-button" onClick={() => setSelectedContact(null)}>
+                  &larr; Back
+                </button>
+                <div className="crm-detail-actions">
+                  <button className="crm-edit-button" onClick={() => handleStartEdit(selectedContact)}>
+                    Edit
+                  </button>
+                  <button className="crm-delete-button" onClick={() => handleDeleteContact(selectedContact.id)}>
+                    Delete
+                  </button>
+                </div>
+              </div>
+              <div className="crm-detail-info">
+                <h3 className="crm-detail-name">{selectedContact.name}</h3>
+                {selectedContact.email && (
+                  <div className="crm-detail-field">
+                    <span className="crm-field-label">Email:</span> {selectedContact.email}
+                  </div>
+                )}
+                {selectedContact.phone && (
+                  <div className="crm-detail-field">
+                    <span className="crm-field-label">Phone:</span> {selectedContact.phone}
+                  </div>
+                )}
+                {selectedContact.socialHandles && (
+                  <div className="crm-detail-field">
+                    <span className="crm-field-label">Social:</span> {selectedContact.socialHandles}
+                  </div>
+                )}
+                <div className="crm-detail-field crm-detail-meta">
+                  {selectedContact.interactionCount} interaction{selectedContact.interactionCount !== 1 ? 's' : ''}
+                  {selectedContact.lastInteraction
+                    ? ` — last ${formatDate(selectedContact.lastInteraction)}`
+                    : ' — never contacted'}
+                </div>
+              </div>
+              <div className="crm-interaction-form">
+                <textarea
+                  className="crm-interaction-input"
+                  placeholder="Log an interaction... (what did you talk about?)"
+                  value={newInteractionNote}
+                  onChange={e => setNewInteractionNote(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      handleLogInteraction(selectedContact.id)
+                    }
+                  }}
+                  rows={2}
+                />
+                <button
+                  className="crm-log-button"
+                  onClick={() => handleLogInteraction(selectedContact.id)}
+                  disabled={!newInteractionNote.trim()}
+                >
+                  Log
+                </button>
+              </div>
+              <div className="crm-interactions-list">
+                <h4>Interaction History</h4>
+                {loadingInteractions && contactInteractions.length === 0 && (
+                  <div className="welcome-message">Loading interactions...</div>
+                )}
+                {!loadingInteractions && contactInteractions.length === 0 && (
+                  <div className="welcome-message">No interactions logged yet.</div>
+                )}
+                {contactInteractions.map(interaction => (
+                  <div key={interaction.id} className="crm-interaction-item">
+                    <div className="crm-interaction-note">{interaction.note}</div>
+                    <div className="crm-interaction-meta">
+                      <span>{formatDate(interaction.occurredAt)}</span>
+                      <button
+                        className="crm-interaction-delete"
+                        onClick={() => handleDeleteInteraction(interaction.id, selectedContact.id)}
+                        title="Delete interaction"
+                      >
+                        &times;
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            /* Contact List View */
+            <>
+              <div className="crm-list-header">
+                <h3>Contacts</h3>
+                <button className="crm-add-button" onClick={() => setShowAddContact(true)}>
+                  + Add Contact
+                </button>
+              </div>
+              {loadingContacts && crmContacts.length === 0 && (
+                <div className="welcome-message">Loading contacts...</div>
+              )}
+              {!loadingContacts && crmContacts.length === 0 && (
+                <div className="welcome-message">
+                  No contacts yet.
+                  <br />
+                  Add someone to start tracking your relationships.
+                </div>
+              )}
+              {crmContacts.length > 0 && (
+                <div className="crm-contacts-list">
+                  {crmContacts.map(contact => (
+                    <button
+                      key={contact.id}
+                      className="crm-contact-card"
+                      onClick={() => setSelectedContact(contact)}
+                    >
+                      <div className="crm-contact-name">
+                        <span className={`crm-staleness-dot ${getStaleness(contact.lastInteraction)}`} />
+                        {contact.name}
+                      </div>
+                      <div className="crm-contact-meta">
+                        <span className="crm-contact-last">
+                          {contact.lastInteraction
+                            ? formatDate(contact.lastInteraction)
+                            : 'Never contacted'}
+                        </span>
+                        <span className="crm-contact-count">
+                          {contact.interactionCount} interaction{contact.interactionCount !== 1 ? 's' : ''}
+                        </span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
         {/* Fullscreen webcam overlay */}
         {fullscreenWebcam && (
           <div ref={fullscreenOverlayRef} className="webcam-fullscreen-overlay" onClick={() => toggleFullscreenWebcam(null, fullscreenWebcam)}>
@@ -1569,30 +2054,50 @@ function App() {
 
         {/* Input container - only show on terminal tab */}
         {activeSubTab === 'terminal' && (
-          <div className="terminal-input-container">
-            <span className="input-prompt">&gt;</span>
-            <textarea
-              ref={inputRef}
-              className="terminal-input"
-              value={input}
-              rows={1}
-              onChange={(e) => {
-                setInput(e.target.value)
-                e.target.style.height = 'auto'
-                e.target.style.height = e.target.scrollHeight + 'px'
-              }}
-              onKeyDown={handleKeyDown}
-              placeholder={status === 'connected' ? 'Type a message...' : `Status: ${status}...`}
-            />
-            <button
-              className="send-button"
-              onClick={sendCommand}
-              disabled={!input.trim() || status === 'processing'}
-              aria-label="Send message"
-            >
-              Send
-            </button>
-          </div>
+          <>
+            {/* Image preview area */}
+            {pendingImages.length > 0 && (
+              <div className="image-preview-container">
+                {pendingImages.map(img => (
+                  <div key={img.id} className="image-preview">
+                    <img src={img.preview} alt="Pending upload" />
+                    <button
+                      className="image-remove-button"
+                      onClick={() => setPendingImages(prev => prev.filter(i => i.id !== img.id))}
+                      aria-label="Remove image"
+                    >
+                      &times;
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="terminal-input-container">
+              <span className="input-prompt">&gt;</span>
+              <textarea
+                ref={inputRef}
+                className="terminal-input"
+                value={input}
+                rows={1}
+                onChange={(e) => {
+                  setInput(e.target.value)
+                  e.target.style.height = 'auto'
+                  e.target.style.height = e.target.scrollHeight + 'px'
+                }}
+                onKeyDown={handleKeyDown}
+                onPaste={handlePaste}
+                placeholder={status === 'connected' ? 'Type a message or paste an image...' : `Status: ${status}...`}
+              />
+              <button
+                className="send-button"
+                onClick={sendCommand}
+                disabled={(!input.trim() && pendingImages.length === 0) || status === 'processing'}
+                aria-label="Send message"
+              >
+                Send
+              </button>
+            </div>
+          </>
         )}
       </div>
     </div>

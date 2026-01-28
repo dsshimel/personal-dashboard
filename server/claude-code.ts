@@ -34,6 +34,18 @@ export interface ClaudeMessage {
 }
 
 /**
+ * Image attachment for sending to Claude.
+ */
+export interface ImageAttachment {
+  /** Base64-encoded image data (without data URL prefix). */
+  data: string;
+  /** Filename for the image. */
+  name: string;
+  /** MIME type (defaults to image/png). */
+  mimeType?: string;
+}
+
+/**
  * Event signatures emitted by ClaudeCodeManager.
  */
 export interface ManagerEvents {
@@ -105,11 +117,13 @@ export class ClaudeCodeManager extends EventEmitter {
    * Emits 'output' events for responses and 'complete' when done.
    *
    * @param message - The user's prompt or slash command.
+   * @param images - Optional array of image attachments.
    */
-  async sendCommand(message: string): Promise<void> {
+  async sendCommand(message: string, images?: ImageAttachment[]): Promise<void> {
     console.log('[ClaudeCode] sendCommand called with:', message.substring(0, 100));
     console.log('[ClaudeCode] Current sessionId:', this.sessionId);
     console.log('[ClaudeCode] isProcessing:', this.isProcessing);
+    console.log('[ClaudeCode] Images attached:', images?.length || 0);
 
     // Handle slash commands
     if (message.startsWith('/')) {
@@ -127,11 +141,11 @@ export class ClaudeCodeManager extends EventEmitter {
     this.wasAborted = false;
     this.emit('output', { type: 'status', content: 'processing' });
 
-    const args = this.buildArgs(message);
+    const args = this.buildArgs(message, images);
     console.log('[ClaudeCode] Built args:', args);
 
     try {
-      await this.spawnClaude(args);
+      await this.spawnClaude(args, message, images);
       console.log('[ClaudeCode] spawnClaude completed successfully');
     } catch (error) {
       console.error('[ClaudeCode] spawnClaude error:', error);
@@ -147,9 +161,28 @@ export class ClaudeCodeManager extends EventEmitter {
    * Builds command-line arguments for Claude CLI.
    *
    * @param message - The user's prompt.
+   * @param images - Optional array of image attachments.
    * @returns Array of CLI arguments.
    */
-  private buildArgs(message: string): string[] {
+  private buildArgs(message: string, images?: ImageAttachment[]): string[] {
+    // If we have images, use stream-json input format
+    if (images && images.length > 0) {
+      const args = [
+        '-p',
+        '--input-format', 'stream-json',
+        '--output-format', 'stream-json',
+        '--verbose',
+        '--allowedTools', 'Read,Edit,Write,Bash,Glob,Grep,WebSearch,WebFetch',
+      ];
+
+      if (this.sessionId) {
+        args.unshift('--resume', this.sessionId);
+      }
+
+      return args;
+    }
+
+    // No images - use simple -p flag with message
     const args = [
       '-p', message,
       '--output-format', 'stream-json',
@@ -165,14 +198,59 @@ export class ClaudeCodeManager extends EventEmitter {
   }
 
   /**
+   * Builds the stream-json input message with optional images.
+   *
+   * @param message - The user's text message.
+   * @param images - Optional array of image attachments.
+   * @returns JSON string for stream-json input.
+   */
+  private buildStreamJsonInput(message: string, images?: ImageAttachment[]): string {
+    const content: Array<{ type: string; text?: string; source?: { type: string; media_type: string; data: string } }> = [];
+
+    // Add images first
+    if (images && images.length > 0) {
+      for (const img of images) {
+        content.push({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: img.mimeType || 'image/png',
+            data: img.data,
+          },
+        });
+      }
+    }
+
+    // Add text message
+    if (message) {
+      content.push({
+        type: 'text',
+        text: message,
+      });
+    }
+
+    const inputMessage = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content,
+      },
+    };
+
+    return JSON.stringify(inputMessage);
+  }
+
+  /**
    * Spawns Claude CLI process and streams output.
    *
    * Uses Bun.spawn for Windows compatibility. Reads stdout as streaming JSON
    * and emits parsed messages as events.
    *
    * @param args - CLI arguments to pass to claude command.
+   * @param message - The user's text message (for stream-json input).
+   * @param images - Optional array of image attachments.
    */
-  private async spawnClaude(args: string[]): Promise<void> {
+  private async spawnClaude(args: string[], message?: string, images?: ImageAttachment[]): Promise<void> {
     console.log('[ClaudeCode] Spawning claude with args:', args);
     console.log('[ClaudeCode] Working directory:', this.workingDirectory);
 
@@ -186,9 +264,20 @@ export class ClaudeCodeManager extends EventEmitter {
 
     console.log('[ClaudeCode] Process spawned, PID:', this.currentProcess.pid);
 
-    // Close stdin immediately
-    const stdin = this.currentProcess.stdin as { end: () => void };
-    stdin.end();
+    // If we have images, write stream-json input to stdin
+    if (images && images.length > 0 && message !== undefined) {
+      const inputJson = this.buildStreamJsonInput(message, images);
+      console.log('[ClaudeCode] Writing stream-json input with', images.length, 'image(s)');
+
+      // Bun's stdin is a FileSink, use write() and end()
+      const stdin = this.currentProcess.stdin as { write: (data: string) => void; end: () => void };
+      stdin.write(inputJson + '\n');
+      stdin.end();
+    } else {
+      // Close stdin immediately for non-image commands
+      const stdin = this.currentProcess.stdin as { end: () => void };
+      stdin.end();
+    }
 
     // Read stdout/stderr as ReadableStreams
     const stdout = this.currentProcess.stdout as ReadableStream<Uint8Array>;

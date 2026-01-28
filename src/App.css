@@ -629,6 +629,53 @@
   transform: scale(1.1);
 }
 
+/* Image preview for pasted images */
+.image-preview-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 16px;
+  background-color: #1a2744;
+  border-top: 1px solid #2a3f5f;
+}
+
+.image-preview {
+  position: relative;
+  width: 80px;
+  height: 80px;
+}
+
+.image-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid #2a3f5f;
+}
+
+.image-remove-button {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #f87171;
+  color: white;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.image-remove-button:hover {
+  background: #ef4444;
+}
+
 .terminal-input-container {
   display: flex;
   align-items: flex-end;
@@ -1400,5 +1447,427 @@
   .projects-path-input {
     min-height: 44px;
     font-size: 16px;
+  }
+}
+
+/* ========== CRM Styles ========== */
+
+.crm-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  gap: 12px;
+}
+
+/* Contact List Header */
+.crm-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.crm-list-header h3 {
+  margin: 0;
+  color: #e0e0e0;
+  font-size: 16px;
+}
+
+.crm-add-button {
+  background: #4ade80;
+  color: #1a1a2e;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.crm-add-button:hover {
+  background: #22c55e;
+}
+
+/* Contact Cards List */
+.crm-contacts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.crm-contact-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #16213e;
+  border: 1px solid #2a3f5f;
+  border-radius: 8px;
+  padding: 12px 14px;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  text-align: left;
+  width: 100%;
+  font-family: inherit;
+  color: inherit;
+}
+
+.crm-contact-card:hover {
+  border-color: #4ade80;
+  background: #1a2744;
+}
+
+.crm-contact-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.crm-staleness-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.crm-staleness-dot.fresh {
+  background: #4ade80;
+}
+
+.crm-staleness-dot.stale {
+  background: #facc15;
+}
+
+.crm-staleness-dot.very-stale {
+  background: #f87171;
+}
+
+.crm-contact-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #888;
+}
+
+.crm-contact-last {
+  color: #a0a0a0;
+}
+
+.crm-contact-count {
+  color: #666;
+}
+
+/* Contact Detail View */
+.crm-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.crm-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.crm-back-button {
+  background: none;
+  border: 1px solid #2a3f5f;
+  color: #a0a0a0;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.crm-back-button:hover {
+  border-color: #4ade80;
+  color: #e0e0e0;
+}
+
+.crm-detail-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.crm-edit-button {
+  background: none;
+  border: 1px solid #3b82f6;
+  color: #3b82f6;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.crm-edit-button:hover {
+  background: rgba(59, 130, 246, 0.15);
+}
+
+.crm-delete-button {
+  background: none;
+  border: 1px solid #f87171;
+  color: #f87171;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.crm-delete-button:hover {
+  background: rgba(248, 113, 113, 0.15);
+}
+
+.crm-detail-info {
+  background: #16213e;
+  border: 1px solid #2a3f5f;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.crm-detail-name {
+  margin: 0 0 12px 0;
+  color: #e0e0e0;
+  font-size: 18px;
+}
+
+.crm-detail-field {
+  font-size: 13px;
+  color: #a0a0a0;
+  margin-bottom: 6px;
+}
+
+.crm-field-label {
+  color: #666;
+  margin-right: 4px;
+}
+
+.crm-detail-meta {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #2a3f5f;
+  color: #888;
+  font-size: 12px;
+}
+
+/* Interaction Form */
+.crm-interaction-form {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.crm-interaction-input {
+  flex: 1;
+  background: #16213e;
+  border: 1px solid #2a3f5f;
+  border-radius: 6px;
+  color: #e0e0e0;
+  padding: 8px 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  resize: vertical;
+  min-height: 40px;
+  transition: border-color 0.2s;
+}
+
+.crm-interaction-input:focus {
+  outline: none;
+  border-color: #4ade80;
+}
+
+.crm-interaction-input::placeholder {
+  color: #555;
+}
+
+.crm-log-button {
+  background: #4ade80;
+  color: #1a1a2e;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  transition: background 0.2s;
+  align-self: flex-start;
+  margin-top: 1px;
+}
+
+.crm-log-button:hover {
+  background: #22c55e;
+}
+
+.crm-log-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Interaction History */
+.crm-interactions-list h4 {
+  margin: 0 0 8px 0;
+  color: #a0a0a0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.crm-interaction-item {
+  background: #16213e;
+  border: 1px solid #2a3f5f;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+}
+
+.crm-interaction-note {
+  color: #e0e0e0;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.crm-interaction-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #666;
+}
+
+.crm-interaction-delete {
+  background: none;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.2s, background 0.2s;
+}
+
+.crm-interaction-delete:hover {
+  color: #f87171;
+  background: rgba(248, 113, 113, 0.1);
+}
+
+/* Add/Edit Contact Form */
+.crm-form {
+  background: #16213e;
+  border: 1px solid #2a3f5f;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.crm-form h3 {
+  margin: 0 0 12px 0;
+  color: #e0e0e0;
+  font-size: 16px;
+}
+
+.crm-form-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.crm-input {
+  background: #1a1a2e;
+  border: 1px solid #2a3f5f;
+  border-radius: 6px;
+  color: #e0e0e0;
+  padding: 8px 12px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  transition: border-color 0.2s;
+}
+
+.crm-input:focus {
+  outline: none;
+  border-color: #4ade80;
+}
+
+.crm-input::placeholder {
+  color: #555;
+}
+
+.crm-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.crm-save-button {
+  background: #4ade80;
+  color: #1a1a2e;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.crm-save-button:hover {
+  background: #22c55e;
+}
+
+.crm-save-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.crm-cancel-button {
+  background: none;
+  border: 1px solid #2a3f5f;
+  color: #a0a0a0;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.crm-cancel-button:hover {
+  border-color: #f87171;
+  color: #e0e0e0;
+}
+
+/* Touch-friendly CRM controls */
+@media (pointer: coarse) {
+  .crm-contact-card {
+    padding: 14px 16px;
+  }
+
+  .crm-add-button,
+  .crm-save-button,
+  .crm-cancel-button,
+  .crm-log-button,
+  .crm-back-button,
+  .crm-edit-button,
+  .crm-delete-button {
+    min-height: 44px;
+  }
+
+  .crm-input,
+  .crm-interaction-input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .crm-interaction-delete {
+    min-width: 44px;
+    min-height: 44px;
   }
 }
