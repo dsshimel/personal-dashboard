@@ -424,6 +424,12 @@
   min-height: 0; /* Important for flex children to scroll */
 }
 
+.terminal-output::after {
+  content: '';
+  display: block;
+  height: 8px;
+}
+
 .terminal-output::-webkit-scrollbar {
   width: 8px;
 }
@@ -678,7 +684,7 @@
 
 .terminal-input-container {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   padding: 12px 16px;
   background-color: #16213e;
   border-top: 1px solid #2a3f5f;
@@ -692,14 +698,15 @@
   color: #4ade80;
   font-weight: bold;
   margin-right: 8px;
-  line-height: 1.4;
-  align-self: flex-start;
+  line-height: 21px;
 }
 
 .terminal-input {
   flex: 1;
   background-color: transparent;
   border: none;
+  padding: 0;
+  margin: 0;
   color: #e0e0e0;
   font-family: inherit;
   font-size: inherit;
@@ -707,7 +714,7 @@
   caret-color: #4ade80;
   resize: none;
   overflow-y: hidden;
-  line-height: 1.4;
+  line-height: 21px;
   max-height: 200px;
 }
 
