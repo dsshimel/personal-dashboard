@@ -83,34 +83,42 @@ interface WebcamDevice {
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 
 /** Currently active UI tab. */
-type Section = 'crm' | 'terminal' | 'hardware' | 'diagnostics'
+type Section = 'briefing' | 'crm' | 'diagnostics' | 'hardware' | 'terminal' | 'todo'
 type TerminalTab = 'terminal' | 'projects' | 'conversations'
 type HardwareTab = 'webcams'
 type DiagnosticsTab = 'logs'
 type CrmTab = 'contacts'
-type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab
+type TodoTab = 'todos'
+type BriefingTab = 'briefing-editor'
+type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab
 
 const SECTION_TABS: Record<Section, SubTab[]> = {
+  briefing: ['briefing-editor'],
   crm: ['contacts'],
-  terminal: ['terminal', 'projects', 'conversations'],
-  hardware: ['webcams'],
   diagnostics: ['logs'],
+  hardware: ['webcams'],
+  terminal: ['terminal', 'projects', 'conversations'],
+  todo: ['todos'],
 }
 
 const SUB_TAB_LABELS: Record<SubTab, string> = {
-  terminal: 'Terminal',
-  projects: 'Projects',
-  conversations: 'Conversations',
-  webcams: 'Webcams',
-  logs: 'Server Logs',
+  'briefing-editor': 'Prompt Editor',
   contacts: 'Contacts',
+  conversations: 'Conversations',
+  logs: 'Server Logs',
+  projects: 'Projects',
+  terminal: 'Terminal',
+  todos: 'Todos',
+  webcams: 'Webcams',
 }
 
 const SECTION_LABELS: Record<Section, string> = {
+  briefing: 'Daily Briefing',
   crm: 'Friend CRM',
-  terminal: 'Terminal',
-  hardware: 'Hardware',
   diagnostics: 'Diagnostics',
+  hardware: 'Hardware',
+  terminal: 'Terminal',
+  todo: 'Todo List',
 }
 
 /** Represents a CRM contact. */
@@ -132,6 +140,13 @@ interface CrmInteraction {
   contactId: string
   note: string
   occurredAt: string
+  createdAt: string
+}
+
+/** Represents a todo item. */
+interface TodoItem {
+  id: string
+  description: string
   createdAt: string
 }
 
@@ -213,6 +228,19 @@ function App() {
   const [newContactPhone, setNewContactPhone] = useState('')
   const [newContactSocial, setNewContactSocial] = useState('')
   const [newInteractionNote, setNewInteractionNote] = useState('')
+
+  // Todo state
+  const [todos, setTodos] = useState<TodoItem[]>([])
+  const [newTodoDescription, setNewTodoDescription] = useState('')
+  const [loadingTodos, setLoadingTodos] = useState(false)
+
+  // Daily briefing state
+  const [briefingPrompt, setBriefingPrompt] = useState('')
+  const [briefingPromptDraft, setBriefingPromptDraft] = useState('')
+  const [loadingBriefingPrompt, setLoadingBriefingPrompt] = useState(false)
+  const [savingBriefingPrompt, setSavingBriefingPrompt] = useState(false)
+  const [sendingTestBriefing, setSendingTestBriefing] = useState(false)
+  const [briefingStatus, setBriefingStatus] = useState<string | null>(null)
 
   // Refs for mutable values that shouldn't trigger re-renders
   const isRestartingRef = useRef(false)
@@ -634,6 +662,125 @@ function App() {
     }
   }, [])
 
+  // --- Todo data fetching ---
+
+  /** Fetches all todos from the API. */
+  const fetchTodos = useCallback(async () => {
+    setLoadingTodos(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/todos`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setTodos(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch todos:', error)
+    } finally {
+      setLoadingTodos(false)
+    }
+  }, [])
+
+  /** Creates a new todo. */
+  const handleCreateTodo = useCallback(async () => {
+    if (!newTodoDescription.trim()) return
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/todos`
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: newTodoDescription.trim() }),
+      })
+      if (response.ok) {
+        setNewTodoDescription('')
+        fetchTodos()
+      }
+    } catch (error) {
+      console.error('Failed to create todo:', error)
+    }
+  }, [newTodoDescription, fetchTodos])
+
+  /** Deletes a todo. */
+  const handleDeleteTodo = useCallback(async (id: string) => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/todos/${id}`
+      const response = await fetch(apiUrl, { method: 'DELETE' })
+      if (response.ok) {
+        fetchTodos()
+      }
+    } catch (error) {
+      console.error('Failed to delete todo:', error)
+    }
+  }, [fetchTodos])
+
+  // --- Daily briefing data fetching ---
+
+  /** Fetches the current briefing prompt. */
+  const fetchBriefingPrompt = useCallback(async () => {
+    setLoadingBriefingPrompt(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/briefing/prompt`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setBriefingPrompt(data.prompt)
+        setBriefingPromptDraft(data.prompt)
+      }
+    } catch (error) {
+      console.error('Failed to fetch briefing prompt:', error)
+    } finally {
+      setLoadingBriefingPrompt(false)
+    }
+  }, [])
+
+  /** Saves the briefing prompt. */
+  const handleSaveBriefingPrompt = useCallback(async () => {
+    setSavingBriefingPrompt(true)
+    setBriefingStatus(null)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/briefing/prompt`
+      const response = await fetch(apiUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt: briefingPromptDraft }),
+      })
+      if (response.ok) {
+        setBriefingPrompt(briefingPromptDraft)
+        setBriefingStatus('Prompt saved')
+        setTimeout(() => setBriefingStatus(null), 3000)
+      }
+    } catch (error) {
+      console.error('Failed to save briefing prompt:', error)
+      setBriefingStatus('Failed to save')
+      setTimeout(() => setBriefingStatus(null), 3000)
+    } finally {
+      setSavingBriefingPrompt(false)
+    }
+  }, [briefingPromptDraft])
+
+  /** Sends a test briefing email. */
+  const handleSendTestBriefing = useCallback(async () => {
+    setSendingTestBriefing(true)
+    setBriefingStatus(null)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/briefing/send-test`
+      const response = await fetch(apiUrl, { method: 'POST' })
+      if (response.ok) {
+        setBriefingStatus('Test email sent')
+        setTimeout(() => setBriefingStatus(null), 3000)
+      } else {
+        setBriefingStatus('Failed to send test email')
+        setTimeout(() => setBriefingStatus(null), 3000)
+      }
+    } catch (error) {
+      console.error('Failed to send test briefing:', error)
+      setBriefingStatus('Failed to send test email')
+      setTimeout(() => setBriefingStatus(null), 3000)
+    } finally {
+      setSendingTestBriefing(false)
+    }
+  }, [])
+
   // --- CRM data fetching ---
 
   /** Fetches all contacts from the CRM API. */
@@ -930,6 +1077,20 @@ function App() {
       fetchProjectConversations(activeProject.id)
     }
   }, [activeProject, activeSubTab, fetchProjectConversations])
+
+  // Fetch briefing prompt when briefing tab is active
+  useEffect(() => {
+    if (activeSubTab === 'briefing-editor') {
+      fetchBriefingPrompt()
+    }
+  }, [activeSubTab, fetchBriefingPrompt])
+
+  // Fetch todos when todo tab is active
+  useEffect(() => {
+    if (activeSubTab === 'todos') {
+      fetchTodos()
+    }
+  }, [activeSubTab, fetchTodos])
 
   // Fetch contacts when CRM tab is active
   useEffect(() => {
@@ -1832,6 +1993,113 @@ function App() {
                     <span className="session-date">{formatDate(session.lastModified)}</span>
                   </div>
                 </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Daily Briefing - always mounted, hidden when inactive */}
+        <div className={`briefing-container ${activeSubTab !== 'briefing-editor' ? 'tab-hidden' : ''}`}>
+          <div className="briefing-header">
+            <h3>Briefing Prompt</h3>
+            <p className="briefing-description">
+              This prompt guides the daily briefing email sent at 8:00 AM.
+              Edit it below and save, or send a test email to preview.
+            </p>
+          </div>
+
+          {loadingBriefingPrompt ? (
+            <div className="welcome-message">Loading prompt...</div>
+          ) : (
+            <>
+              <textarea
+                className="briefing-textarea"
+                value={briefingPromptDraft}
+                onChange={e => setBriefingPromptDraft(e.target.value)}
+                rows={10}
+                placeholder="Enter your briefing prompt..."
+              />
+
+              <div className="briefing-actions">
+                <button
+                  className="briefing-save-button"
+                  onClick={handleSaveBriefingPrompt}
+                  disabled={savingBriefingPrompt || briefingPromptDraft === briefingPrompt}
+                >
+                  {savingBriefingPrompt ? 'Saving...' : 'Save Prompt'}
+                </button>
+                <button
+                  className="briefing-test-button"
+                  onClick={handleSendTestBriefing}
+                  disabled={sendingTestBriefing}
+                >
+                  {sendingTestBriefing ? 'Sending...' : 'Send Test Email'}
+                </button>
+                {briefingPromptDraft !== briefingPrompt && (
+                  <button
+                    className="briefing-discard-button"
+                    onClick={() => setBriefingPromptDraft(briefingPrompt)}
+                  >
+                    Discard Changes
+                  </button>
+                )}
+              </div>
+
+              {briefingStatus && (
+                <div className="briefing-status">{briefingStatus}</div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Todo List - always mounted, hidden when inactive */}
+        <div className={`todo-container ${activeSubTab !== 'todos' ? 'tab-hidden' : ''}`}>
+          <div className="todo-add-form">
+            <input
+              className="todo-input"
+              type="text"
+              placeholder="Add a new todo..."
+              value={newTodoDescription}
+              onChange={e => setNewTodoDescription(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleCreateTodo()}
+            />
+            <button
+              className="todo-add-button"
+              onClick={handleCreateTodo}
+              disabled={!newTodoDescription.trim()}
+            >
+              Add
+            </button>
+          </div>
+
+          {loadingTodos && todos.length === 0 && (
+            <div className="welcome-message">Loading todos...</div>
+          )}
+
+          {!loadingTodos && todos.length === 0 && (
+            <div className="welcome-message">
+              No todos yet.
+              <br />
+              Add one above to get started.
+            </div>
+          )}
+
+          {todos.length > 0 && (
+            <div className="todo-list">
+              {todos.map(todo => (
+                <div key={todo.id} className="todo-item">
+                  <div className="todo-item-content">
+                    <span className="todo-description">{todo.description}</span>
+                    <span className="todo-date">{formatDate(todo.createdAt)}</span>
+                  </div>
+                  <button
+                    className="todo-delete-button"
+                    onClick={() => handleDeleteTodo(todo.id)}
+                    title="Delete todo"
+                  >
+                    &times;
+                  </button>
+                </div>
               ))}
             </div>
           )}

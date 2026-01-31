@@ -12,6 +12,8 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { ClaudeCodeManager } from './claude-code.js';
 import { loadProjects, addProject, removeProject, updateProjectConversation, listProjectConversations, addConversationToProject, removeConversationFromProject, initProjectsDb } from './projects.js';
 import { initCrmDb, listContacts, createContact, updateContact, deleteContact, listInteractions, createInteraction, deleteInteraction } from './crm.js';
+import { initTodoDb, listTodos, createTodo, deleteTodo } from './todo.js';
+import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest } from './daily-email.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
 import { readdir, readFile, writeFile } from 'fs/promises';
@@ -24,6 +26,10 @@ initLogger('main');
 const db = initDb();
 initProjectsDb(db);
 initCrmDb(db);
+initTodoDb(db);
+initDailyEmailDb(db);
+
+startDailyEmailScheduler();
 
 const PORT = process.env.PORT || 4001;
 const WORKING_DIR = process.env.WORKING_DIR || process.cwd();
@@ -372,6 +378,83 @@ app.delete('/crm/interactions/:id', (req, res) => {
   } catch (error) {
     console.error('Error deleting interaction:', error);
     res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to delete interaction' });
+  }
+});
+
+// --- Todo Endpoints ---
+
+app.get('/todos', (_req, res) => {
+  try {
+    const todos = listTodos();
+    res.json(todos);
+  } catch (error) {
+    console.error('Error listing todos:', error);
+    res.status(500).json({ error: 'Failed to list todos' });
+  }
+});
+
+app.post('/todos', (req, res) => {
+  try {
+    const { description } = req.body;
+    if (!description || typeof description !== 'string') {
+      res.status(400).json({ error: 'description is required' });
+      return;
+    }
+    const todo = createTodo({ description });
+    console.log(`Todo created: ${todo.description.substring(0, 50)}`);
+    res.json(todo);
+  } catch (error) {
+    console.error('Error creating todo:', error);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to create todo' });
+  }
+});
+
+app.delete('/todos/:id', (req, res) => {
+  try {
+    deleteTodo(req.params.id);
+    console.log(`Todo deleted: ${req.params.id}`);
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error deleting todo:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to delete todo' });
+  }
+});
+
+// --- Daily Briefing Endpoints ---
+
+app.get('/briefing/prompt', (_req, res) => {
+  try {
+    const prompt = getBriefingPrompt();
+    res.json({ prompt });
+  } catch (error) {
+    console.error('Error getting briefing prompt:', error);
+    res.status(500).json({ error: 'Failed to get briefing prompt' });
+  }
+});
+
+app.put('/briefing/prompt', (req, res) => {
+  try {
+    const { prompt } = req.body;
+    if (!prompt || typeof prompt !== 'string') {
+      res.status(400).json({ error: 'prompt is required' });
+      return;
+    }
+    setBriefingPrompt(prompt);
+    console.log('Briefing prompt updated');
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error updating briefing prompt:', error);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to update briefing prompt' });
+  }
+});
+
+app.post('/briefing/send-test', async (_req, res) => {
+  try {
+    await sendDailyDigest();
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error sending test briefing:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to send test briefing' });
   }
 });
 

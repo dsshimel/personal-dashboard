@@ -2,12 +2,16 @@
  * @fileoverview Project manager for the personal dashboard.
  *
  * Handles CRUD operations for projects, auto-detection of GitHub URLs
- * from git remotes, and file-based persistence of project data.
+ * from git remotes, and SQLite-based persistence. On first run, migrates
+ * existing projects.json data into the database.
  */
 
-import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
+import { readFile, readdir } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join, basename } from 'path';
 import { homedir } from 'os';
+import { Database } from 'bun:sqlite';
+import { getDb, getConfigDir } from './db.js';
 
 /** Represents a project with a directory and optional GitHub link. */
 export interface Project {
@@ -25,38 +29,81 @@ export interface Project {
   conversationIds: string[];
 }
 
-/** Default directory where dashboard config is stored. */
-const DEFAULT_CONFIG_DIR = join(homedir(), '.personal-dashboard');
+/**
+ * Initializes the projects tables in the database and runs JSON migration if needed.
+ *
+ * @param db - The SQLite database instance.
+ */
+export function initProjectsDb(db: Database): void {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      directory TEXT NOT NULL UNIQUE,
+      github_url TEXT,
+      last_conversation_id TEXT
+    )
+  `);
 
-/** Returns the config directory, using override if set (for testing). */
-let configDirOverride: string | null = null;
+  db.run(`
+    CREATE TABLE IF NOT EXISTS project_conversations (
+      project_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      PRIMARY KEY (project_id, conversation_id),
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )
+  `);
 
-/** Returns the current config directory path. */
-export function getConfigDir(): string {
-  return configDirOverride || DEFAULT_CONFIG_DIR;
-}
-
-/** Returns the current projects file path. */
-export function getProjectsFile(): string {
-  return join(getConfigDir(), 'projects.json');
+  // Migrate from projects.json if it exists
+  migrateFromJson(db);
 }
 
 /**
- * Overrides the config directory path (for testing).
- * Pass null to reset to default.
+ * One-time migration from projects.json to SQLite.
+ * Imports data and renames the file to projects.json.bak.
  */
-export function setConfigDir(dir: string | null): void {
-  configDirOverride = dir;
-}
+function migrateFromJson(db: Database): void {
+  const jsonPath = join(getConfigDir(), 'projects.json');
 
-/**
- * Ensures the config directory exists.
- */
-async function ensureConfigDir(): Promise<void> {
+  if (!existsSync(jsonPath)) return;
+
   try {
-    await mkdir(getConfigDir(), { recursive: true });
+    // Read synchronously since this runs at startup
+    const content = require('fs').readFileSync(jsonPath, 'utf-8');
+    const projects: Array<{
+      id: string;
+      name: string;
+      directory: string;
+      githubUrl: string | null;
+      lastConversationId: string | null;
+      conversationIds?: string[];
+    }> = JSON.parse(content);
+
+    const insertProject = db.prepare(
+      'INSERT OR IGNORE INTO projects (id, name, directory, github_url, last_conversation_id) VALUES (?, ?, ?, ?, ?)'
+    );
+    const insertConv = db.prepare(
+      'INSERT OR IGNORE INTO project_conversations (project_id, conversation_id) VALUES (?, ?)'
+    );
+
+    const migrate = db.transaction(() => {
+      for (const p of projects) {
+        insertProject.run(p.id, p.name, p.directory, p.githubUrl, p.lastConversationId);
+        if (p.conversationIds) {
+          for (const convId of p.conversationIds) {
+            insertConv.run(p.id, convId);
+          }
+        }
+      }
+    });
+
+    migrate();
+
+    // Rename the old file so migration doesn't run again
+    const bakPath = join(getConfigDir(), 'projects.json.bak');
+    require('fs').renameSync(jsonPath, bakPath);
   } catch {
-    // Directory already exists
+    // If migration fails, the file stays and we'll retry next startup
   }
 }
 
@@ -70,32 +117,45 @@ export function slugify(text: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-/**
- * Loads all projects from disk.
- *
- * @returns Array of projects, or empty array if file doesn't exist.
- */
-export async function loadProjects(): Promise<Project[]> {
-  try {
-    const content = await readFile(getProjectsFile(), 'utf-8');
-    const raw: Array<Omit<Project, 'conversationIds'> & { conversationIds?: string[] }> = JSON.parse(content);
-    return raw.map(p => ({
-      ...p,
-      conversationIds: p.conversationIds || [],
-    }));
-  } catch {
-    return [];
-  }
+/** Row shape returned from the projects table. */
+interface ProjectRow {
+  id: string;
+  name: string;
+  directory: string;
+  github_url: string | null;
+  last_conversation_id: string | null;
 }
 
 /**
- * Saves all projects to disk.
- *
- * @param projects - The full list of projects to persist.
+ * Converts a database row + conversation IDs into a Project object.
  */
-export async function saveProjects(projects: Project[]): Promise<void> {
-  await ensureConfigDir();
-  await writeFile(getProjectsFile(), JSON.stringify(projects, null, 2), 'utf-8');
+function rowToProject(row: ProjectRow, conversationIds: string[]): Project {
+  return {
+    id: row.id,
+    name: row.name,
+    directory: row.directory,
+    githubUrl: row.github_url,
+    lastConversationId: row.last_conversation_id,
+    conversationIds,
+  };
+}
+
+/**
+ * Loads all projects from the database.
+ *
+ * @returns Array of projects.
+ */
+export async function loadProjects(): Promise<Project[]> {
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM projects').all() as ProjectRow[];
+
+  return rows.map(row => {
+    const convRows = db.prepare(
+      'SELECT conversation_id FROM project_conversations WHERE project_id = ?'
+    ).all(row.id) as Array<{ conversation_id: string }>;
+    const conversationIds = convRows.map(c => c.conversation_id);
+    return rowToProject(row, conversationIds);
+  });
 }
 
 /**
@@ -157,14 +217,16 @@ export async function detectGitHubUrl(directory: string): Promise<string | null>
  * @returns The newly created project.
  * @throws If the directory is already registered as a project.
  */
-export async function addProject(directory: string): Promise<Project> {
-  const projects = await loadProjects();
+export async function addProject(directory: string, options?: { skipGitDetection?: boolean }): Promise<Project> {
+  const db = getDb();
 
   // Normalize path separators
   const normalizedDir = directory.replace(/\\/g, '/');
 
-  // Check for duplicates
-  if (projects.some(p => p.directory.replace(/\\/g, '/') === normalizedDir)) {
+  // Check for duplicates (normalize stored paths too)
+  const existing = db.prepare('SELECT id FROM projects').all() as Array<{ id: string }>;
+  const allProjects = db.prepare('SELECT * FROM projects').all() as ProjectRow[];
+  if (allProjects.some(p => p.directory.replace(/\\/g, '/') === normalizedDir)) {
     throw new Error(`Project already exists for directory: ${directory}`);
   }
 
@@ -174,13 +236,18 @@ export async function addProject(directory: string): Promise<Project> {
   // Ensure unique ID
   let uniqueId = id;
   let counter = 2;
-  while (projects.some(p => p.id === uniqueId)) {
+  const existingIds = new Set(existing.map(e => e.id));
+  while (existingIds.has(uniqueId)) {
     uniqueId = `${id}-${counter++}`;
   }
 
-  const githubUrl = await detectGitHubUrl(directory);
+  const githubUrl = options?.skipGitDetection ? null : await detectGitHubUrl(directory);
 
-  const project: Project = {
+  db.prepare(
+    'INSERT INTO projects (id, name, directory, github_url, last_conversation_id) VALUES (?, ?, ?, ?, ?)'
+  ).run(uniqueId, name, directory, githubUrl, null);
+
+  return {
     id: uniqueId,
     name,
     directory,
@@ -188,11 +255,6 @@ export async function addProject(directory: string): Promise<Project> {
     lastConversationId: null,
     conversationIds: [],
   };
-
-  projects.push(project);
-  await saveProjects(projects);
-
-  return project;
 }
 
 /**
@@ -202,15 +264,14 @@ export async function addProject(directory: string): Promise<Project> {
  * @throws If the project is not found.
  */
 export async function removeProject(id: string): Promise<void> {
-  const projects = await loadProjects();
-  const index = projects.findIndex(p => p.id === id);
+  const db = getDb();
+  const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(id);
 
-  if (index === -1) {
+  if (!existing) {
     throw new Error(`Project not found: ${id}`);
   }
 
-  projects.splice(index, 1);
-  await saveProjects(projects);
+  db.prepare('DELETE FROM projects WHERE id = ?').run(id);
 }
 
 /**
@@ -220,15 +281,14 @@ export async function removeProject(id: string): Promise<void> {
  * @param conversationId - The conversation ID to store.
  */
 export async function updateProjectConversation(id: string, conversationId: string): Promise<void> {
-  const projects = await loadProjects();
-  const project = projects.find(p => p.id === id);
+  const db = getDb();
+  const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(id);
 
-  if (project) {
-    project.lastConversationId = conversationId;
-    if (!project.conversationIds.includes(conversationId)) {
-      project.conversationIds.push(conversationId);
-    }
-    await saveProjects(projects);
+  if (existing) {
+    db.prepare('UPDATE projects SET last_conversation_id = ? WHERE id = ?').run(conversationId, id);
+    db.prepare(
+      'INSERT OR IGNORE INTO project_conversations (project_id, conversation_id) VALUES (?, ?)'
+    ).run(id, conversationId);
   }
 }
 
@@ -240,19 +300,24 @@ export async function updateProjectConversation(id: string, conversationId: stri
  * @throws If the project is not found or conversation is already associated.
  */
 export async function addConversationToProject(projectId: string, conversationId: string): Promise<void> {
-  const projects = await loadProjects();
-  const project = projects.find(p => p.id === projectId);
+  const db = getDb();
+  const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
 
-  if (!project) {
+  if (!existing) {
     throw new Error(`Project not found: ${projectId}`);
   }
 
-  if (project.conversationIds.includes(conversationId)) {
+  const existingConv = db.prepare(
+    'SELECT conversation_id FROM project_conversations WHERE project_id = ? AND conversation_id = ?'
+  ).get(projectId, conversationId);
+
+  if (existingConv) {
     throw new Error(`Conversation ${conversationId} is already associated with project ${projectId}`);
   }
 
-  project.conversationIds.push(conversationId);
-  await saveProjects(projects);
+  db.prepare(
+    'INSERT INTO project_conversations (project_id, conversation_id) VALUES (?, ?)'
+  ).run(projectId, conversationId);
 }
 
 /**
@@ -263,25 +328,30 @@ export async function addConversationToProject(projectId: string, conversationId
  * @throws If the project is not found.
  */
 export async function removeConversationFromProject(projectId: string, conversationId: string): Promise<void> {
-  const projects = await loadProjects();
-  const project = projects.find(p => p.id === projectId);
+  const db = getDb();
+  const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId);
 
-  if (!project) {
+  if (!existing) {
     throw new Error(`Project not found: ${projectId}`);
   }
 
-  const index = project.conversationIds.indexOf(conversationId);
-  if (index !== -1) {
-    project.conversationIds.splice(index, 1);
-  }
+  db.prepare(
+    'DELETE FROM project_conversations WHERE project_id = ? AND conversation_id = ?'
+  ).run(projectId, conversationId);
 
-  if (project.lastConversationId === conversationId) {
-    project.lastConversationId = project.conversationIds.length > 0
-      ? project.conversationIds[project.conversationIds.length - 1]
-      : null;
-  }
+  // Update lastConversationId if we just removed it
+  const project = db.prepare('SELECT last_conversation_id FROM projects WHERE id = ?').get(projectId) as { last_conversation_id: string | null } | null;
+  if (project && project.last_conversation_id === conversationId) {
+    // Set to the most recently added remaining conversation, or null
+    const latest = db.prepare(
+      'SELECT conversation_id FROM project_conversations WHERE project_id = ? ORDER BY rowid DESC LIMIT 1'
+    ).get(projectId) as { conversation_id: string } | null;
 
-  await saveProjects(projects);
+    db.prepare('UPDATE projects SET last_conversation_id = ? WHERE id = ?').run(
+      latest ? latest.conversation_id : null,
+      projectId
+    );
+  }
 }
 
 /**
@@ -348,14 +418,22 @@ export async function listProjectConversations(directory: string): Promise<Array
   lastModified: Date;
   project: string;
 }>> {
-  const projects = await loadProjects();
+  const db = getDb();
   const normalizedDir = directory.replace(/\\/g, '/');
-  const project = projects.find(p => p.directory.replace(/\\/g, '/') === normalizedDir);
 
-  if (!project || project.conversationIds.length === 0) {
-    return [];
-  }
+  // Find the project by directory
+  const allProjects = db.prepare('SELECT * FROM projects').all() as ProjectRow[];
+  const project = allProjects.find(p => p.directory.replace(/\\/g, '/') === normalizedDir);
 
+  if (!project) return [];
+
+  const convRows = db.prepare(
+    'SELECT conversation_id FROM project_conversations WHERE project_id = ?'
+  ).all(project.id) as Array<{ conversation_id: string }>;
+
+  if (convRows.length === 0) return [];
+
+  const conversationIds = convRows.map(c => c.conversation_id);
   const claudeDir = join(homedir(), '.claude', 'projects');
   const conversations: Array<{
     id: string;
@@ -367,7 +445,7 @@ export async function listProjectConversations(directory: string): Promise<Array
   try {
     const projectDirs = await readdir(claudeDir, { withFileTypes: true });
 
-    for (const conversationId of project.conversationIds) {
+    for (const conversationId of conversationIds) {
       for (const projectDir of projectDirs) {
         if (!projectDir.isDirectory()) continue;
 
