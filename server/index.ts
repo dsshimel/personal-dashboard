@@ -180,6 +180,29 @@ app.get('/metrics', metricsHandler);
 // Client-pushed metrics endpoint (Web Vitals, WS latency, etc.)
 app.post('/metrics/client', clientMetricsHandler);
 
+// Restart the Grafana Docker container
+app.post('/grafana/restart', async (_req, res) => {
+  console.log('Grafana restart requested...');
+  try {
+    const proc = Bun.spawn(['docker', 'restart', 'dashboard-grafana'], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const exitCode = await proc.exited;
+    if (exitCode === 0) {
+      console.log('Grafana container restarted successfully');
+      res.json({ status: 'ok' });
+    } else {
+      const stderr = await new Response(proc.stderr).text();
+      console.error('Failed to restart Grafana:', stderr);
+      res.status(500).json({ error: stderr.trim() || 'Failed to restart Grafana' });
+    }
+  } catch (error) {
+    console.error('Failed to restart Grafana:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to restart Grafana' });
+  }
+});
+
 // Health check endpoint
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', connections: managers.size });

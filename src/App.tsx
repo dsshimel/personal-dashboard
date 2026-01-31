@@ -1617,6 +1617,27 @@ function App() {
         </nav>
         <div className="sidebar-footer">
           <button
+            onClick={async () => {
+              try {
+                const apiUrl = `http://${window.location.hostname}:4001/grafana/restart`
+                const response = await fetch(apiUrl, { method: 'POST' })
+                if (response.ok) {
+                  addMessage('status', 'Grafana container restarted')
+                } else {
+                  const data = await response.json()
+                  addMessage('error', `Failed to restart Grafana: ${data.error}`)
+                }
+              } catch (error) {
+                addMessage('error', 'Failed to restart Grafana')
+              }
+              setSidebarOpen(false)
+            }}
+            className="restart-button"
+            title="Restart Grafana Docker container"
+          >
+            Restart Grafana
+          </button>
+          <button
             onClick={() => { handleRestart(); setSidebarOpen(false) }}
             className="restart-button"
             title="Restart server"

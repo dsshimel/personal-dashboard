@@ -256,7 +256,7 @@
     },
     {
       "id": 11,
-      "title": "Event Loop Lag",
+      "title": "Event Loop Lag (delay between scheduled and actual callback execution)",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 40 },
       "targets": [

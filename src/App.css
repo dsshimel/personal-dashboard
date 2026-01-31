@@ -96,6 +96,9 @@
   margin-top: auto;
   padding: 12px;
   border-top: 1px solid #2a3f5f;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .restart-button {
