@@ -12,6 +12,8 @@ bun run server       # Backend only (port 4001)
 bun run webcam       # Webcam server only (port 4002)
 bun test tests/server/  # Run server tests
 bun run lint         # Run ESLint
+docker compose up -d    # Start Prometheus (port 9090) + Grafana (port 3000)
+docker compose down     # Stop monitoring stack
 ```
 
 ## Architecture
@@ -19,13 +21,17 @@ bun run lint         # Run ESLint
 ```
 Browser
   ├─ WebSocket :4001 ─→ Express Server ─→ ClaudeCodeManager ─→ Claude CLI
-  └─ WebSocket :4002 ─→ WebcamServer ─→ WebcamManager ─→ FFmpeg
+  ├─ WebSocket :4002 ─→ WebcamServer ─→ WebcamManager ─→ FFmpeg
+  └─ iframe :3000 ─→ Grafana ─→ Prometheus ─→ Express /metrics
 ```
 
 ## Directory Structure
 
 - `src/` - React frontend (single-page app)
 - `server/` - Backend servers and process managers
+- `grafana/` - Grafana provisioning configs and dashboard JSON files
+  - `dashboards/` - Dashboard definitions (client-performance.json, server-performance.json)
+  - `provisioning/` - Auto-provisioned datasources and dashboard providers
 
 ## Key Files
 
@@ -36,6 +42,8 @@ Browser
 | `server/claude-code.ts` | `ClaudeCodeManager` class - spawns and manages Claude CLI |
 | `server/webcam-server.ts` | WebSocket server for webcam streams (port 4002) |
 | `server/webcam-manager.ts` | `WebcamManager` class - FFmpeg webcam capture/streaming |
+| `server/telemetry.ts` | Prometheus metrics definitions, Express middleware, `/metrics` endpoints |
+| `src/telemetry.ts` | Client-side Web Vitals collection, pushes metrics to server |
 | `server/restart-watcher.ts` | Process watcher for graceful server restarts |
 
 ## WebSocket Protocol
@@ -76,6 +84,19 @@ After finishing work, run `bun run build` to make sure everything builds with no
 
 When adding new features or changing existing behavior, add corresponding tests in `tests/server/`. Run tests with `bun test tests/server/` to verify.
 
+## Performance Monitoring
+
+Uses `prom-client` for server metrics and `web-vitals` for client metrics, with Prometheus + Grafana running via Docker Compose.
+
+- **Server metrics** (`server/telemetry.ts`): HTTP request duration/count, WebSocket connections/messages, Claude command duration/count, process CPU/memory/event loop lag (via `collectDefaultMetrics`)
+- **Client metrics** (`src/telemetry.ts`): Web Vitals (LCP, CLS, INP, TTFB), WebSocket reconnections. Pushed to server via `POST /metrics/client`
+- **Prometheus** (port 9090): Scrapes `GET /metrics` on port 4001 every 10s. Config in `prometheus.yml`
+- **Grafana** (port 3000): Anonymous access enabled, iframe embedding enabled. Dashboards auto-provisioned from `grafana/dashboards/`
+- **UI**: Diagnostics tab has three sub-tabs: Server Logs, Client Performance (Grafana iframe), Server Performance (Grafana iframe)
+- **Grafana restart**: Sidebar button calls `POST /grafana/restart` which runs `docker restart dashboard-grafana`
+
+To modify dashboards, edit the JSON in `grafana/dashboards/` and restart Grafana (`docker compose restart grafana`).
+
 ## Session Management
 
 - Sessions stored as JSONL in `~/.claude/projects/<project>/<session-id>.jsonl`
@@ -91,6 +112,9 @@ When adding new features or changing existing behavior, add corresponding tests 
 | `/sessions/:id/history` | GET | Get conversation history |
 | `/sessions/:id/messages?since=N` | GET | Get messages since ID (reconnection) |
 | `/restart` | POST | Trigger server restart |
+| `/grafana/restart` | POST | Restart the Grafana Docker container |
+| `/metrics` | GET | Prometheus scrape endpoint (all server + client-pushed metrics) |
+| `/metrics/client` | POST | Client pushes Web Vitals and WS metrics (body: `{name, value}`) |
 | `/projects` | GET | List all projects |
 | `/projects` | POST | Add a new project (body: `{directory}`) |
 | `/projects/:id` | DELETE | Remove a project |
