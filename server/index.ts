@@ -16,6 +16,7 @@ import { initTodoDb, listTodos, createTodo, deleteTodo } from './todo.js';
 import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest } from './daily-email.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
+import { metricsMiddleware, metricsHandler, clientMetricsHandler, wsConnectionsActive, wsMessagesTotal, claudeCommandDuration, claudeCommandsTotal, claudeSessionsActive } from './telemetry.js';
 import { readdir, readFile, writeFile } from 'fs/promises';
 import { join } from 'path';
 import { homedir } from 'os';
@@ -165,10 +166,19 @@ console.error = (...args: unknown[]) => {
 app.use(express.json());
 app.use((_req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, x-request-id');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   next();
 });
+
+// Metrics middleware — records HTTP request duration and count
+app.use(metricsMiddleware);
+
+// Prometheus scrape endpoint
+app.get('/metrics', metricsHandler);
+
+// Client-pushed metrics endpoint (Web Vitals, WS latency, etc.)
+app.post('/metrics/client', clientMetricsHandler);
 
 // Health check endpoint
 app.get('/health', (_req, res) => {
@@ -678,6 +688,7 @@ function attachManagerToWebSocket(
     connectionSessions.set(ws, sessionId);
     // Store manager by session ID for reconnection
     sessionManagers.set(sessionId, manager);
+    claudeSessionsActive.inc();
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'session', content: sessionId }));
     }
@@ -709,6 +720,7 @@ function attachManagerToWebSocket(
 
 wss.on('connection', (ws) => {
   console.log('Client connected');
+  wsConnectionsActive.inc({ server: 'main' });
 
   // Add to all clients set for log broadcasting
   allClients.add(ws);
@@ -733,6 +745,7 @@ wss.on('connection', (ws) => {
     try {
       const message = JSON.parse(data.toString());
       console.log('[Server] Parsed message type:', message.type);
+      wsMessagesTotal.inc({ server: 'main', direction: 'in', type: message.type });
 
       switch (message.type) {
         case 'command':
@@ -774,7 +787,16 @@ wss.on('connection', (ws) => {
             }
 
             console.log('[Server] Sending command to manager:', message.content.substring(0, 100), 'with', images?.length || 0, 'images');
-            await manager.sendCommand(message.content, images);
+            const endTimer = claudeCommandDuration.startTimer();
+            try {
+              await manager.sendCommand(message.content, images);
+              endTimer();
+              claudeCommandsTotal.inc({ status: 'success' });
+            } catch (cmdError) {
+              endTimer();
+              claudeCommandsTotal.inc({ status: 'error' });
+              throw cmdError;
+            }
             console.log('[Server] Command completed');
           }
           break;
@@ -852,6 +874,7 @@ wss.on('connection', (ws) => {
   // Clean up on disconnect - don't abort running processes, let them complete
   ws.on('close', () => {
     console.log('Client disconnected');
+    wsConnectionsActive.dec({ server: 'main' });
     allClients.delete(ws);
     connectionSessions.delete(ws);
     cleanupListeners(); // Remove event listeners but keep manager in sessionManagers
@@ -860,6 +883,7 @@ wss.on('connection', (ws) => {
 
   ws.on('error', (error) => {
     console.error('WebSocket error:', error);
+    wsConnectionsActive.dec({ server: 'main' });
     allClients.delete(ws);
     connectionSessions.delete(ws);
     cleanupListeners();

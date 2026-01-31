@@ -7,6 +7,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import './App.css'
+import { initClientTelemetry, reportWsReconnect } from './telemetry'
 
 /**
  * Counter for generating unique message IDs.
@@ -86,7 +87,7 @@ type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processin
 type Section = 'briefing' | 'crm' | 'diagnostics' | 'hardware' | 'terminal' | 'todo'
 type TerminalTab = 'terminal' | 'projects' | 'conversations'
 type HardwareTab = 'webcams'
-type DiagnosticsTab = 'logs'
+type DiagnosticsTab = 'logs' | 'client-perf' | 'server-perf'
 type CrmTab = 'contacts'
 type TodoTab = 'todos'
 type BriefingTab = 'briefing-editor'
@@ -95,7 +96,7 @@ type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | Br
 const SECTION_TABS: Record<Section, SubTab[]> = {
   briefing: ['briefing-editor'],
   crm: ['contacts'],
-  diagnostics: ['logs'],
+  diagnostics: ['logs', 'client-perf', 'server-perf'],
   hardware: ['webcams'],
   terminal: ['terminal', 'projects', 'conversations'],
   todo: ['todos'],
@@ -105,7 +106,9 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
   'briefing-editor': 'Prompt Editor',
   contacts: 'Contacts',
   conversations: 'Conversations',
+  'client-perf': 'Client Performance',
   logs: 'Server Logs',
+  'server-perf': 'Server Performance',
   projects: 'Projects',
   terminal: 'Terminal',
   todos: 'Todos',
@@ -449,6 +452,7 @@ function App() {
 
       // Auto-reconnect after 3 seconds
       reconnectTimeoutRef.current = window.setTimeout(() => {
+        reportWsReconnect()
         connect()
       }, 3000)
     }
@@ -1023,6 +1027,10 @@ function App() {
   useEffect(() => {
     activeProjectRef.current = activeProject
   }, [activeProject])
+
+  useEffect(() => {
+    initClientTelemetry()
+  }, [])
 
   useEffect(() => {
     connect()
@@ -1753,6 +1761,24 @@ function App() {
             ↓
           </button>
         )}
+
+        {/* Client Performance - Grafana iframe */}
+        <div className={`perf-container ${activeSubTab !== 'client-perf' ? 'tab-hidden' : ''}`}>
+          <iframe
+            src="http://localhost:3000/d/client-perf/client-performance?orgId=1&kiosk"
+            className="grafana-iframe"
+            title="Client Performance"
+          />
+        </div>
+
+        {/* Server Performance - Grafana iframe */}
+        <div className={`perf-container ${activeSubTab !== 'server-perf' ? 'tab-hidden' : ''}`}>
+          <iframe
+            src="http://localhost:3000/d/server-perf/server-performance?orgId=1&kiosk"
+            className="grafana-iframe"
+            title="Server Performance"
+          />
+        </div>
 
         {/* Webcams output - always mounted, hidden when inactive */}
         <div className={`webcams-container ${activeSubTab !== 'webcams' ? 'tab-hidden' : ''}`} ref={webcamsContainerRef}>

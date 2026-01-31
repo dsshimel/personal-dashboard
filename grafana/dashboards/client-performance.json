@@ -1,0 +1,284 @@
+{
+  "uid": "client-perf",
+  "title": "Client Performance",
+  "tags": ["personal-dashboard", "client"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Web Vitals Summary",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.75, rate(web_vital_lcp_seconds_bucket[5m]))",
+          "legendFormat": "LCP (p75)",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.75, rate(web_vital_fid_seconds_bucket[5m]))",
+          "legendFormat": "FID (p75)",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.75, rate(web_vital_cls_bucket[5m]))",
+          "legendFormat": "CLS (p75)",
+          "refId": "C"
+        },
+        {
+          "expr": "histogram_quantile(0.75, rate(web_vital_inp_seconds_bucket[5m]))",
+          "legendFormat": "INP (p75)",
+          "refId": "D"
+        },
+        {
+          "expr": "histogram_quantile(0.75, rate(web_vital_ttfb_seconds_bucket[5m]))",
+          "legendFormat": "TTFB (p75)",
+          "refId": "E"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2.5 },
+              { "color": "red", "value": 4 }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "CLS (p75)" },
+            "properties": [
+              { "id": "unit", "value": "none" },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "green", "value": null },
+                { "color": "yellow", "value": 0.1 },
+                { "color": "red", "value": 0.25 }
+              ]}}
+            ]
+          }
+        ]
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"] }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 2,
+      "title": "Largest Contentful Paint (LCP)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(web_vital_lcp_seconds_bucket[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.75, rate(web_vital_lcp_seconds_bucket[5m]))",
+          "legendFormat": "p75",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(web_vital_lcp_seconds_bucket[5m]))",
+          "legendFormat": "p95",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 3,
+      "title": "First Input Delay (FID)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(web_vital_fid_seconds_bucket[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.75, rate(web_vital_fid_seconds_bucket[5m]))",
+          "legendFormat": "p75",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(web_vital_fid_seconds_bucket[5m]))",
+          "legendFormat": "p95",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 4,
+      "title": "Cumulative Layout Shift (CLS)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(web_vital_cls_bucket[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.75, rate(web_vital_cls_bucket[5m]))",
+          "legendFormat": "p75",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(web_vital_cls_bucket[5m]))",
+          "legendFormat": "p95",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 5,
+      "title": "Interaction to Next Paint (INP)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(web_vital_inp_seconds_bucket[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.75, rate(web_vital_inp_seconds_bucket[5m]))",
+          "legendFormat": "p75",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(web_vital_inp_seconds_bucket[5m]))",
+          "legendFormat": "p95",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 6,
+      "title": "Time to First Byte (TTFB)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(web_vital_ttfb_seconds_bucket[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.75, rate(web_vital_ttfb_seconds_bucket[5m]))",
+          "legendFormat": "p75",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(web_vital_ttfb_seconds_bucket[5m]))",
+          "legendFormat": "p95",
+          "refId": "C"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 7,
+      "title": "WebSocket Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(client_ws_latency_seconds_bucket[5m]))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.75, rate(client_ws_latency_seconds_bucket[5m]))",
+          "legendFormat": "p75",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(client_ws_latency_seconds_bucket[5m]))",
+          "legendFormat": "p95",
+          "refId": "C"
+        },
+        {
+          "expr": "histogram_quantile(0.99, rate(client_ws_latency_seconds_bucket[5m]))",
+          "legendFormat": "p99",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    },
+    {
+      "id": 8,
+      "title": "WebSocket Reconnections",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 28 },
+      "targets": [
+        {
+          "expr": "rate(client_ws_reconnects_total[5m])",
+          "legendFormat": "Reconnects/s",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "fillOpacity": 20, "lineWidth": 2, "drawStyle": "bars" }
+        }
+      },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" }
+    }
+  ],
+  "schemaVersion": 39
+}
