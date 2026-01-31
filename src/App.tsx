@@ -255,6 +255,7 @@ function App() {
   const logsOutputRef = useRef<HTMLDivElement>(null)
   const webcamsContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const reconnectTimeoutRef = useRef<number | null>(null)
   const webcamReconnectTimeoutRef = useRef<number | null>(null)
   const previousActiveWebcamsRef = useRef<Set<string>>(new Set())
@@ -1295,6 +1296,33 @@ function App() {
     }
   }, [])
 
+  /** Handles file selection from the image picker. */
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files) return
+
+    for (const file of Array.from(files)) {
+      if (!file.type.startsWith('image/')) continue
+
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = reader.result as string
+        const base64 = dataUrl.split(',')[1]
+
+        setPendingImages(prev => [...prev, {
+          id: generateId(),
+          data: base64,
+          name: file.name || `image-${Date.now()}.png`,
+          preview: dataUrl
+        }])
+      }
+      reader.readAsDataURL(file)
+    }
+
+    // Reset the input so the same file can be selected again
+    e.target.value = ''
+  }, [])
+
   /** Resets the current session and clears message history. */
   const handleReset = () => {
     wsRef.current?.send(JSON.stringify({ type: 'reset' }))
@@ -1808,7 +1836,7 @@ function App() {
         {/* Client Performance - Grafana iframe */}
         <div className={`perf-container ${activeSubTab !== 'client-perf' ? 'tab-hidden' : ''}`}>
           <iframe
-            src="http://localhost:3000/d/client-perf/client-performance?orgId=1&kiosk"
+            src={`http://${window.location.hostname}:3000/d/client-perf/client-performance?orgId=1&kiosk`}
             className="grafana-iframe"
             title="Client Performance"
           />
@@ -1817,7 +1845,7 @@ function App() {
         {/* Server Performance - Grafana iframe */}
         <div className={`perf-container ${activeSubTab !== 'server-perf' ? 'tab-hidden' : ''}`}>
           <iframe
-            src="http://localhost:3000/d/server-perf/server-performance?orgId=1&kiosk"
+            src={`http://${window.location.hostname}:3000/d/server-perf/server-performance?orgId=1&kiosk`}
             className="grafana-iframe"
             title="Server Performance"
           />
@@ -2426,6 +2454,22 @@ function App() {
               </div>
             )}
             <div className="terminal-input-container">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleFileSelect}
+                style={{ display: 'none' }}
+              />
+              <button
+                className="image-attach-button"
+                onClick={() => fileInputRef.current?.click()}
+                aria-label="Attach image"
+                title="Attach image"
+              >
+                +
+              </button>
               <span className="input-prompt">&gt;</span>
               <textarea
                 ref={inputRef}
