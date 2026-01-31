@@ -217,7 +217,7 @@ export async function sendDailyDigest(): Promise<void> {
     return;
   }
 
-  const todos = listTodos();
+  const todos = listTodos().filter(t => !t.done);
   const prompt = getBriefingPrompt();
 
   // Generate AI briefing by spawning Claude CLI

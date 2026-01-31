@@ -13,6 +13,7 @@ import {
   listTodos,
   getTodo,
   createTodo,
+  updateTodo,
   deleteTodo,
 } from '../../server/todo';
 import { initDb, closeDb, setConfigDir } from '../../server/db';
@@ -43,12 +44,13 @@ afterEach(async () => {
 
 describe('Todo Module', () => {
   describe('createTodo', () => {
-    test('creates a todo with description', () => {
+    test('creates a todo with description and done=false', () => {
       const todo = createTodo({ description: 'Buy groceries' });
 
       expect(todo.id).toBeTruthy();
       expect(todo.description).toBe('Buy groceries');
       expect(todo.createdAt).toBeTruthy();
+      expect(todo.done).toBe(false);
     });
 
     test('generates unique IDs', () => {
@@ -90,19 +92,47 @@ describe('Todo Module', () => {
       expect(todos.length).toBe(3);
     });
 
-    test('sorts by date descending (newest first)', () => {
+    test('sorts pending first by date descending, then done by date descending', () => {
       // Insert with explicit timestamps to guarantee ordering
       const { getDb } = require('../../server/db');
       const db = getDb();
-      db.prepare('INSERT INTO todos (id, description, created_at) VALUES (?, ?, ?)').run('a', 'First', '2024-01-01T00:00:00.000Z');
-      db.prepare('INSERT INTO todos (id, description, created_at) VALUES (?, ?, ?)').run('b', 'Second', '2024-06-01T00:00:00.000Z');
-      db.prepare('INSERT INTO todos (id, description, created_at) VALUES (?, ?, ?)').run('c', 'Third', '2024-12-01T00:00:00.000Z');
+      db.prepare('INSERT INTO todos (id, description, created_at, done) VALUES (?, ?, ?, ?)').run('a', 'First', '2024-01-01T00:00:00.000Z', 0);
+      db.prepare('INSERT INTO todos (id, description, created_at, done) VALUES (?, ?, ?, ?)').run('b', 'Second', '2024-06-01T00:00:00.000Z', 1);
+      db.prepare('INSERT INTO todos (id, description, created_at, done) VALUES (?, ?, ?, ?)').run('c', 'Third', '2024-12-01T00:00:00.000Z', 0);
 
       const todos = listTodos();
-      // Newest first
+      // Pending first (newest first), then done
       expect(todos[0].id).toBe('c');
-      expect(todos[1].id).toBe('b');
-      expect(todos[2].id).toBe('a');
+      expect(todos[1].id).toBe('a');
+      expect(todos[2].id).toBe('b');
+    });
+  });
+
+  describe('updateTodo', () => {
+    test('marks a todo as done', () => {
+      const todo = createTodo({ description: 'Finish report' });
+      const updated = updateTodo(todo.id, { done: true });
+
+      expect(updated.done).toBe(true);
+      expect(updated.description).toBe('Finish report');
+
+      const found = getTodo(todo.id);
+      expect(found!.done).toBe(true);
+    });
+
+    test('marks a done todo as pending again', () => {
+      const todo = createTodo({ description: 'Reopen me' });
+      updateTodo(todo.id, { done: true });
+      const updated = updateTodo(todo.id, { done: false });
+
+      expect(updated.done).toBe(false);
+
+      const found = getTodo(todo.id);
+      expect(found!.done).toBe(false);
+    });
+
+    test('throws for nonexistent ID', () => {
+      expect(() => updateTodo('nonexistent', { done: true })).toThrow('Todo not found: nonexistent');
     });
   });
 

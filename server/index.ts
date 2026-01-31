@@ -12,7 +12,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { ClaudeCodeManager } from './claude-code.js';
 import { loadProjects, addProject, removeProject, updateProjectConversation, listProjectConversations, addConversationToProject, removeConversationFromProject, initProjectsDb } from './projects.js';
 import { initCrmDb, listContacts, createContact, updateContact, deleteContact, listInteractions, createInteraction, deleteInteraction } from './crm.js';
-import { initTodoDb, listTodos, createTodo, deleteTodo } from './todo.js';
+import { initTodoDb, listTodos, createTodo, updateTodo, deleteTodo } from './todo.js';
 import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest } from './daily-email.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
@@ -439,6 +439,22 @@ app.post('/todos', (req, res) => {
   } catch (error) {
     console.error('Error creating todo:', error);
     res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to create todo' });
+  }
+});
+
+app.put('/todos/:id', (req, res) => {
+  try {
+    const { done } = req.body;
+    if (typeof done !== 'boolean') {
+      res.status(400).json({ error: 'done (boolean) is required' });
+      return;
+    }
+    const todo = updateTodo(req.params.id, { done });
+    console.log(`Todo ${done ? 'completed' : 'reopened'}: ${todo.description.substring(0, 50)}`);
+    res.json(todo);
+  } catch (error) {
+    console.error('Error updating todo:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to update todo' });
   }
 });
 

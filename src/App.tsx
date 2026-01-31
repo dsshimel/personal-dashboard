@@ -121,7 +121,7 @@ const SECTION_LABELS: Record<Section, string> = {
   diagnostics: 'Diagnostics',
   hardware: 'Hardware',
   terminal: 'Terminal',
-  todo: 'Todo List',
+  todo: 'TODO List',
 }
 
 /** Represents a CRM contact. */
@@ -151,6 +151,7 @@ interface TodoItem {
   id: string
   description: string
   createdAt: string
+  done: boolean
 }
 
 /** Message stored in server buffer for reconnection support. */
@@ -231,6 +232,7 @@ function App() {
   const [newContactPhone, setNewContactPhone] = useState('')
   const [newContactSocial, setNewContactSocial] = useState('')
   const [newInteractionNote, setNewInteractionNote] = useState('')
+  const [newInteractionDate, setNewInteractionDate] = useState(() => new Date().toISOString().split('T')[0])
 
   // Todo state
   const [todos, setTodos] = useState<TodoItem[]>([])
@@ -704,6 +706,23 @@ function App() {
     }
   }, [newTodoDescription, fetchTodos])
 
+  /** Toggles a todo's done status. */
+  const handleToggleTodo = useCallback(async (id: string, done: boolean) => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/todos/${id}`
+      const response = await fetch(apiUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ done }),
+      })
+      if (response.ok) {
+        fetchTodos()
+      }
+    } catch (error) {
+      console.error('Failed to toggle todo:', error)
+    }
+  }, [fetchTodos])
+
   /** Deletes a todo. */
   const handleDeleteTodo = useCallback(async (id: string) => {
     try {
@@ -905,20 +924,23 @@ function App() {
 
     try {
       const apiUrl = `http://${window.location.hostname}:4001/crm/contacts/${contactId}/interactions`
+      const body: { note: string; occurredAt?: string } = { note }
+      if (newInteractionDate) body.occurredAt = new Date(newInteractionDate).toISOString()
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ note }),
+        body: JSON.stringify(body),
       })
       if (response.ok) {
         setNewInteractionNote('')
+        setNewInteractionDate(new Date().toISOString().split('T')[0])
         await fetchInteractions(contactId)
         await fetchContacts() // Refresh staleness info
       }
     } catch (error) {
       console.error('Failed to log interaction:', error)
     }
-  }, [newInteractionNote, fetchInteractions, fetchContacts])
+  }, [newInteractionNote, newInteractionDate, fetchInteractions, fetchContacts])
 
   /** Deletes an interaction. */
   const handleDeleteInteraction = useCallback(async (interactionId: string, contactId: string) => {
@@ -2134,7 +2156,14 @@ function App() {
           {todos.length > 0 && (
             <div className="todo-list">
               {todos.map(todo => (
-                <div key={todo.id} className="todo-item">
+                <div key={todo.id} className={`todo-item ${todo.done ? 'todo-done' : ''}`}>
+                  <input
+                    type="checkbox"
+                    className="todo-checkbox"
+                    checked={todo.done}
+                    onChange={() => handleToggleTodo(todo.id, !todo.done)}
+                    title={todo.done ? 'Mark as pending' : 'Mark as done'}
+                  />
                   <div className="todo-item-content">
                     <span className="todo-description">{todo.description}</span>
                     <span className="todo-date">{formatDate(todo.createdAt)}</span>
@@ -2257,13 +2286,22 @@ function App() {
                   }}
                   rows={2}
                 />
-                <button
-                  className="crm-log-button"
-                  onClick={() => handleLogInteraction(selectedContact.id)}
-                  disabled={!newInteractionNote.trim()}
-                >
-                  Log
-                </button>
+                <div className="crm-interaction-actions">
+                  <input
+                    type="date"
+                    className="crm-interaction-date"
+                    value={newInteractionDate}
+                    onChange={e => setNewInteractionDate(e.target.value)}
+                    title="Date of interaction (leave blank for today)"
+                  />
+                  <button
+                    className="crm-log-button"
+                    onClick={() => handleLogInteraction(selectedContact.id)}
+                    disabled={!newInteractionNote.trim()}
+                  >
+                    Log
+                  </button>
+                </div>
               </div>
               <div className="crm-interactions-list">
                 <h4>Interaction History</h4>

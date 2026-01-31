@@ -2,7 +2,7 @@
  * @fileoverview Todo list module for the dashboard.
  *
  * Provides CRUD operations for todo items. Todos are sorted by creation
- * date (newest first) and have a description and timestamp.
+ * date (newest first) and have a description, timestamp, and done status.
  */
 
 import { Database } from 'bun:sqlite';
@@ -13,6 +13,7 @@ export interface Todo {
   id: string;
   description: string;
   createdAt: string;
+  done: boolean;
 }
 
 /** Row shape from the todos table. */
@@ -20,10 +21,12 @@ interface TodoRow {
   id: string;
   description: string;
   created_at: string;
+  done: number;
 }
 
 /**
  * Initializes the todos table in the database.
+ * Adds the `done` column if it doesn't exist (migration for existing DBs).
  *
  * @param db - The SQLite database instance.
  */
@@ -35,6 +38,13 @@ export function initTodoDb(db: Database): void {
       created_at TEXT NOT NULL
     )
   `);
+
+  // Migration: add done column if it doesn't exist
+  const columns = db.prepare("PRAGMA table_info(todos)").all() as Array<{ name: string }>;
+  const hasDone = columns.some(c => c.name === 'done');
+  if (!hasDone) {
+    db.run('ALTER TABLE todos ADD COLUMN done INTEGER NOT NULL DEFAULT 0');
+  }
 }
 
 /** Generates a UUID v4 string. */
@@ -48,16 +58,17 @@ function rowToTodo(row: TodoRow): Todo {
     id: row.id,
     description: row.description,
     createdAt: row.created_at,
+    done: row.done === 1,
   };
 }
 
 /**
- * Lists all todos sorted by creation date (newest first).
+ * Lists all todos sorted by done status (pending first), then creation date (newest first).
  */
 export function listTodos(): Todo[] {
   const db = getDb();
   const rows = db.prepare(
-    'SELECT * FROM todos ORDER BY created_at DESC'
+    'SELECT * FROM todos ORDER BY done ASC, created_at DESC'
   ).all() as TodoRow[];
 
   return rows.map(rowToTodo);
@@ -87,15 +98,36 @@ export function createTodo(data: { description: string }): Todo {
   const now = new Date().toISOString();
 
   db.prepare(`
-    INSERT INTO todos (id, description, created_at)
-    VALUES (?, ?, ?)
+    INSERT INTO todos (id, description, created_at, done)
+    VALUES (?, ?, ?, 0)
   `).run(id, data.description, now);
 
   return {
     id,
     description: data.description,
     createdAt: now,
+    done: false,
   };
+}
+
+/**
+ * Updates a todo's done status.
+ *
+ * @param id - The todo ID.
+ * @param data - Fields to update.
+ * @returns The updated todo.
+ * @throws If the todo is not found.
+ */
+export function updateTodo(id: string, data: { done: boolean }): Todo {
+  const db = getDb();
+  const existing = getTodo(id);
+  if (!existing) {
+    throw new Error(`Todo not found: ${id}`);
+  }
+
+  db.prepare('UPDATE todos SET done = ? WHERE id = ?').run(data.done ? 1 : 0, id);
+
+  return { ...existing, done: data.done };
 }
 
 /**
