@@ -505,6 +505,24 @@ describe('WebcamManager', () => {
       expect(args).not.toContain('-vcodec');
     });
 
+    test('includes low-latency FFmpeg flags', async () => {
+      const { getCapturedArgs } = installMockSpawn({ captureArgs: true });
+
+      await manager.startStream('test-device');
+
+      const args = getCapturedArgs();
+      expect(args).toContain('-fflags');
+      expect(args).toContain('nobuffer');
+      expect(args).toContain('-probesize');
+      expect(args).toContain('32');
+      expect(args).toContain('-analyzeduration');
+      expect(args).toContain('0');
+      // Low-latency flags should come before -i
+      const fflagsIdx = args.indexOf('-fflags');
+      const inputIdx = args.indexOf('-i');
+      expect(fflagsIdx).toBeLessThan(inputIdx);
+    });
+
     test('emits stream-started event', async () => {
       installMockSpawn();
 
@@ -834,6 +852,30 @@ describe('WebcamManager', () => {
       expect(events[0].data).toBe('directFrame');
     });
 
+    test('first frame is emitted immediately when buffer is empty', () => {
+      const { events } = captureEvents<{ deviceId: string; data: string }>(manager, 'frame');
+
+      createFrameBuffer('test-device', 15);
+      pushFrame('test-device', 'firstFrame');
+
+      // First frame should be emitted synchronously
+      expect(events.length).toBe(1);
+      expect(events[0].data).toBe('firstFrame');
+    });
+
+    test('subsequent frames are not emitted synchronously', () => {
+      const { events } = captureEvents<{ deviceId: string; data: string }>(manager, 'frame');
+
+      createFrameBuffer('test-device', 15);
+      pushFrame('test-device', 'frame1');
+      pushFrame('test-device', 'frame2');
+      pushFrame('test-device', 'frame3');
+
+      // Only the first frame is emitted synchronously
+      expect(events.length).toBe(1);
+      expect(events[0].data).toBe('frame1');
+    });
+
     test('buffer drains frames at steady interval', async () => {
       const { events } = captureEvents<{ deviceId: string; data: string }>(manager, 'frame');
 
@@ -843,16 +885,17 @@ describe('WebcamManager', () => {
       pushFrame('test-device', 'frame2');
       pushFrame('test-device', 'frame3');
 
-      // No frames emitted synchronously
-      expect(events.length).toBe(0);
+      // First frame emitted immediately, rest buffered
+      expect(events.length).toBe(1);
 
       // Wait for drain timer ticks
       await new Promise(resolve => setTimeout(resolve, 80));
 
-      expect(events.length).toBe(3);
-      expect(events[0].data).toBe('frame1');
-      expect(events[1].data).toBe('frame2');
-      expect(events[2].data).toBe('frame3');
+      expect(events.length).toBe(4); // 1 immediate + 3 from buffer drain
+      expect(events[0].data).toBe('frame1'); // immediate
+      expect(events[1].data).toBe('frame1'); // first drain tick (still in buffer)
+      expect(events[2].data).toBe('frame2');
+      expect(events[3].data).toBe('frame3');
     });
 
     test('empty buffer ticks do not emit frames', async () => {

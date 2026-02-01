@@ -93,6 +93,8 @@ export class WebcamManager extends EventEmitter {
   private deviceCapabilities: Map<string, { capabilities: DeviceMode[]; nativeMode: { width: number; height: number; fps: number; pixelFormat: string } | null }> = new Map();
   /** Per-device frame buffers for smoothing output. */
   private frameBuffers: Map<string, FrameBuffer> = new Map();
+  /** Per-device timestamps for mode switch telemetry. */
+  private streamStartTimes: Map<string, number> = new Map();
 
   /**
    * Creates a new WebcamManager.
@@ -286,6 +288,9 @@ export class WebcamManager extends EventEmitter {
       // Force MJPEG input when available to prevent H.264 software decode (which can saturate CPU)
       const inputFormat = nativeMode?.pixelFormat;
       const args: string[] = [
+        '-fflags', 'nobuffer',
+        '-probesize', '32',
+        '-analyzeduration', '0',
         '-f', 'dshow',
         ...(inputFormat === 'mjpeg' ? ['-vcodec', 'mjpeg'] : []),
         '-video_size', inputResolution,
@@ -413,6 +418,7 @@ export class WebcamManager extends EventEmitter {
     }
 
     log(`[WebcamManager] Changing output mode for ${deviceId} from ${stream.outputMode} to ${outputMode}`);
+    const t0 = performance.now();
 
     // Mark as changing so we don't emit stream-stopped
     this.changingResolution.add(deviceId);
@@ -424,10 +430,12 @@ export class WebcamManager extends EventEmitter {
       stream.process.kill();
       this.destroyFrameBuffer(deviceId);
       this.activeStreams.delete(deviceId);
+      const tKill = performance.now();
 
       log(`[WebcamManager] Waiting for old process to exit`);
       await oldProcess.exited;
-      log(`[WebcamManager] Old process exited, starting new stream`);
+      const tExit = performance.now();
+      log(`[WebcamManager] Old process exited (kill=${(tKill - t0).toFixed(0)}ms, exit=${(tExit - tKill).toFixed(0)}ms)`);
     } catch (error) {
       this.changingResolution.delete(deviceId);
       console.error(`Error stopping stream for mode change: ${error}`);
@@ -435,12 +443,15 @@ export class WebcamManager extends EventEmitter {
     }
 
     // Start new stream with new mode
+    const tSpawnStart = performance.now();
     log(`[WebcamManager] Starting new stream in ${outputMode} mode`);
+    this.streamStartTimes.set(deviceId, tSpawnStart);
     const result = await this.startStream(deviceId, outputMode);
+    const tSpawnEnd = performance.now();
 
     // Now safe to clear the flag after new stream has started
     this.changingResolution.delete(deviceId);
-    log(`[WebcamManager] Removed ${deviceId} from changingResolution, result: ${result}`);
+    log(`[WebcamManager] Mode switch for ${deviceId}: total=${(tSpawnEnd - t0).toFixed(0)}ms, spawn=${(tSpawnEnd - tSpawnStart).toFixed(0)}ms`);
     return result;
   }
 
@@ -553,6 +564,11 @@ export class WebcamManager extends EventEmitter {
       return;
     }
 
+    // Emit first frame immediately to minimize time-to-display after mode switch
+    if (buf.count === 0) {
+      this.emit('frame', { deviceId, data: base64 });
+    }
+
     buf.frames[buf.writeIndex] = base64;
     buf.writeIndex = (buf.writeIndex + 1) % FRAME_BUFFER_SIZE;
 
@@ -589,6 +605,7 @@ export class WebcamManager extends EventEmitter {
   private async handleFrameStream(deviceId: string, stdout: ReadableStream<Uint8Array>): Promise<void> {
     const reader = stdout.getReader();
     let buffer = new Uint8Array(0);
+    let firstFrameLogged = false;
 
     // JPEG markers: SOI = 0xFFD8 (Start of Image), EOI = 0xFFD9 (End of Image)
 
@@ -653,6 +670,14 @@ export class WebcamManager extends EventEmitter {
 
           // Convert to base64 and push into frame buffer
           const base64 = btoa(String.fromCharCode(...frame));
+          if (!firstFrameLogged) {
+            firstFrameLogged = true;
+            const startTime = this.streamStartTimes.get(deviceId);
+            if (startTime) {
+              log(`[WebcamManager] First frame for ${deviceId}: ${(performance.now() - startTime).toFixed(0)}ms after spawn`);
+              this.streamStartTimes.delete(deviceId);
+            }
+          }
           this.pushFrame(deviceId, base64);
         }
       }
