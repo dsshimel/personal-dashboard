@@ -84,42 +84,49 @@ interface WebcamDevice {
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 
 /** Currently active UI tab. */
-type Section = 'briefing' | 'crm' | 'diagnostics' | 'hardware' | 'terminal' | 'todo'
+type Section = 'briefing' | 'crm' | 'diagnostics' | 'hardware' | 'recitations' | 'terminal' | 'todo'
 type TerminalTab = 'terminal' | 'projects' | 'conversations'
 type HardwareTab = 'webcams'
 type DiagnosticsTab = 'logs' | 'client-perf' | 'server-perf'
 type CrmTab = 'contacts'
 type TodoTab = 'todos'
 type BriefingTab = 'briefing-editor'
-type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab
+type RecitationsTab = 'recitations-editor'
+type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab | RecitationsTab
 
+// Keep alphabetized by section key
 const SECTION_TABS: Record<Section, SubTab[]> = {
   briefing: ['briefing-editor'],
   crm: ['contacts'],
   diagnostics: ['logs', 'client-perf', 'server-perf'],
   hardware: ['webcams'],
+  recitations: ['recitations-editor'],
   terminal: ['terminal', 'projects', 'conversations'],
   todo: ['todos'],
 }
 
+// Keep alphabetized by display label
 const SUB_TAB_LABELS: Record<SubTab, string> = {
-  'briefing-editor': 'Prompt Editor',
+  'client-perf': 'Client Performance',
   contacts: 'Contacts',
   conversations: 'Conversations',
-  'client-perf': 'Client Performance',
-  logs: 'Server Logs',
-  'server-perf': 'Server Performance',
+  'briefing-editor': 'Prompt Editor',
   projects: 'Projects',
+  'recitations-editor': 'Recitations',
+  'server-perf': 'Server Performance',
+  logs: 'Server Logs',
   terminal: 'Terminal',
   todos: 'Todos',
   webcams: 'Webcams',
 }
 
+// Keep sidebar sections alphabetized by display label
 const SECTION_LABELS: Record<Section, string> = {
   briefing: 'Daily Briefing',
-  crm: 'Friend CRM',
   diagnostics: 'Diagnostics',
+  crm: 'Friend CRM',
   hardware: 'Hardware',
+  recitations: 'Recitations',
   terminal: 'Terminal',
   todo: 'TODO List',
 }
@@ -152,6 +159,14 @@ interface TodoItem {
   description: string
   createdAt: string
   done: boolean
+}
+
+/** Represents a recitation item. */
+interface RecitationItem {
+  id: string
+  title: string
+  content: string | null
+  createdAt: string
 }
 
 /** Message stored in server buffer for reconnection support. */
@@ -238,6 +253,15 @@ function App() {
   const [todos, setTodos] = useState<TodoItem[]>([])
   const [newTodoDescription, setNewTodoDescription] = useState('')
   const [loadingTodos, setLoadingTodos] = useState(false)
+
+  // Recitations state
+  const [recitations, setRecitations] = useState<RecitationItem[]>([])
+  const [newRecitationTitle, setNewRecitationTitle] = useState('')
+  const [newRecitationContent, setNewRecitationContent] = useState('')
+  const [editingRecitation, setEditingRecitation] = useState<RecitationItem | null>(null)
+  const [editRecitationTitle, setEditRecitationTitle] = useState('')
+  const [editRecitationContent, setEditRecitationContent] = useState('')
+  const [loadingRecitations, setLoadingRecitations] = useState(false)
 
   // Daily briefing state
   const [briefingPrompt, setBriefingPrompt] = useState('')
@@ -737,6 +761,102 @@ function App() {
     }
   }, [fetchTodos])
 
+  // --- Recitations data fetching ---
+
+  /** Fetches all recitations from the server. */
+  const fetchRecitations = useCallback(async () => {
+    setLoadingRecitations(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/recitations`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setRecitations(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch recitations:', error)
+    } finally {
+      setLoadingRecitations(false)
+    }
+  }, [])
+
+  /** Creates a new recitation. */
+  const handleCreateRecitation = useCallback(async () => {
+    if (!newRecitationTitle.trim()) return
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/recitations`
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: newRecitationTitle.trim(),
+          content: newRecitationContent.trim() || undefined,
+        }),
+      })
+      if (response.ok) {
+        setNewRecitationTitle('')
+        setNewRecitationContent('')
+        fetchRecitations()
+      }
+    } catch (error) {
+      console.error('Failed to create recitation:', error)
+    }
+  }, [newRecitationTitle, newRecitationContent, fetchRecitations])
+
+  /** Saves edits to an existing recitation. */
+  const handleUpdateRecitation = useCallback(async () => {
+    if (!editingRecitation || !editRecitationTitle.trim()) return
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/recitations/${editingRecitation.id}`
+      const response = await fetch(apiUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: editRecitationTitle.trim(),
+          content: editRecitationContent.trim() || null,
+        }),
+      })
+      if (response.ok) {
+        setEditingRecitation(null)
+        setEditRecitationTitle('')
+        setEditRecitationContent('')
+        fetchRecitations()
+      }
+    } catch (error) {
+      console.error('Failed to update recitation:', error)
+    }
+  }, [editingRecitation, editRecitationTitle, editRecitationContent, fetchRecitations])
+
+  /** Deletes a recitation. */
+  const handleDeleteRecitation = useCallback(async (id: string) => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/recitations/${id}`
+      const response = await fetch(apiUrl, { method: 'DELETE' })
+      if (response.ok) {
+        if (editingRecitation?.id === id) {
+          setEditingRecitation(null)
+        }
+        fetchRecitations()
+      }
+    } catch (error) {
+      console.error('Failed to delete recitation:', error)
+    }
+  }, [editingRecitation, fetchRecitations])
+
+  /** Starts editing a recitation. */
+  const handleStartEditRecitation = useCallback((recitation: RecitationItem) => {
+    setEditingRecitation(recitation)
+    setEditRecitationTitle(recitation.title)
+    setEditRecitationContent(recitation.content || '')
+  }, [])
+
+  /** Cancels editing a recitation. */
+  const handleCancelEditRecitation = useCallback(() => {
+    setEditingRecitation(null)
+    setEditRecitationTitle('')
+    setEditRecitationContent('')
+  }, [])
+
   // --- Daily briefing data fetching ---
 
   /** Fetches the current briefing prompt. */
@@ -1122,6 +1242,13 @@ function App() {
       fetchTodos()
     }
   }, [activeSubTab, fetchTodos])
+
+  // Fetch recitations when recitations tab is active
+  useEffect(() => {
+    if (activeSubTab === 'recitations-editor') {
+      fetchRecitations()
+    }
+  }, [activeSubTab, fetchRecitations])
 
   // Fetch contacts when CRM tab is active
   useEffect(() => {
@@ -2203,6 +2330,106 @@ function App() {
                   >
                     &times;
                   </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Recitations - always mounted, hidden when inactive */}
+        <div className={`recitations-container ${activeSubTab !== 'recitations-editor' ? 'tab-hidden' : ''}`}>
+          <div className="recitations-add-form">
+            <input
+              className="recitations-input"
+              type="text"
+              placeholder="Recitation title..."
+              value={newRecitationTitle}
+              onChange={e => setNewRecitationTitle(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleCreateRecitation()}
+            />
+            <textarea
+              className="recitations-textarea"
+              placeholder="Content (optional)..."
+              value={newRecitationContent}
+              onChange={e => setNewRecitationContent(e.target.value)}
+              rows={3}
+            />
+            <button
+              className="recitations-add-button"
+              onClick={handleCreateRecitation}
+              disabled={!newRecitationTitle.trim()}
+            >
+              Add Recitation
+            </button>
+          </div>
+
+          {loadingRecitations && recitations.length === 0 && (
+            <div className="welcome-message">Loading recitations...</div>
+          )}
+
+          {!loadingRecitations && recitations.length === 0 && (
+            <div className="welcome-message">
+              No recitations yet.
+              <br />
+              Add one above to include in your daily briefing.
+            </div>
+          )}
+
+          {recitations.length > 0 && (
+            <div className="recitations-list">
+              {recitations.map(recitation => (
+                <div key={recitation.id} className="recitation-item">
+                  {editingRecitation?.id === recitation.id ? (
+                    <div className="recitation-edit-form">
+                      <input
+                        className="recitations-input"
+                        type="text"
+                        value={editRecitationTitle}
+                        onChange={e => setEditRecitationTitle(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleUpdateRecitation()}
+                      />
+                      <textarea
+                        className="recitations-textarea"
+                        value={editRecitationContent}
+                        onChange={e => setEditRecitationContent(e.target.value)}
+                        rows={4}
+                      />
+                      <div className="recitation-edit-actions">
+                        <button className="recitations-save-button" onClick={handleUpdateRecitation} disabled={!editRecitationTitle.trim()}>
+                          Save
+                        </button>
+                        <button className="recitations-cancel-button" onClick={handleCancelEditRecitation}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="recitation-item-header">
+                        <span className="recitation-title">{recitation.title}</span>
+                        <span className="recitation-date">{formatDate(recitation.createdAt)}</span>
+                      </div>
+                      {recitation.content && (
+                        <div className="recitation-content">{recitation.content}</div>
+                      )}
+                      <div className="recitation-actions">
+                        <button
+                          className="recitation-edit-button"
+                          onClick={() => handleStartEditRecitation(recitation)}
+                          title="Edit recitation"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="recitation-delete-button"
+                          onClick={() => handleDeleteRecitation(recitation.id)}
+                          title="Delete recitation"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
               ))}
             </div>

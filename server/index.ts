@@ -14,6 +14,7 @@ import { loadProjects, addProject, removeProject, updateProjectConversation, lis
 import { initCrmDb, listContacts, createContact, updateContact, deleteContact, listInteractions, createInteraction, deleteInteraction } from './crm.js';
 import { initTodoDb, listTodos, createTodo, updateTodo, deleteTodo } from './todo.js';
 import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest } from './daily-email.js';
+import { initRecitationsDb, listRecitations, createRecitation, updateRecitation, deleteRecitation } from './recitations.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
 import { metricsMiddleware, metricsHandler, clientMetricsHandler, wsConnectionsActive, wsMessagesTotal, claudeCommandDuration, claudeCommandsTotal, claudeSessionsActive } from './telemetry.js';
@@ -29,6 +30,7 @@ initProjectsDb(db);
 initCrmDb(db);
 initTodoDb(db);
 initDailyEmailDb(db);
+initRecitationsDb(db);
 
 startDailyEmailScheduler();
 
@@ -504,6 +506,58 @@ app.post('/briefing/send-test', async (_req, res) => {
   } catch (error) {
     console.error('Error sending test briefing:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to send test briefing' });
+  }
+});
+
+// --- Recitation Endpoints ---
+
+app.get('/recitations', (_req, res) => {
+  try {
+    const recitations = listRecitations();
+    res.json(recitations);
+  } catch (error) {
+    console.error('Error listing recitations:', error);
+    res.status(500).json({ error: 'Failed to list recitations' });
+  }
+});
+
+app.post('/recitations', (req, res) => {
+  try {
+    const { title, content } = req.body;
+    if (!title || typeof title !== 'string') {
+      res.status(400).json({ error: 'title is required' });
+      return;
+    }
+    const recitation = createRecitation({ title, content });
+    console.log(`Recitation created: ${recitation.title}`);
+    res.json(recitation);
+  } catch (error) {
+    console.error('Error creating recitation:', error);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to create recitation' });
+  }
+});
+
+app.put('/recitations/:id', (req, res) => {
+  try {
+    const { title, content } = req.body;
+    const recitation = updateRecitation(req.params.id, { title, content });
+    console.log(`Recitation updated: ${recitation.title}`);
+    res.json(recitation);
+  } catch (error) {
+    console.error('Error updating recitation:', error);
+    const statusCode = error instanceof Error && error.message.includes('not found') ? 404 : 400;
+    res.status(statusCode).json({ error: error instanceof Error ? error.message : 'Failed to update recitation' });
+  }
+});
+
+app.delete('/recitations/:id', (req, res) => {
+  try {
+    deleteRecitation(req.params.id);
+    console.log(`Recitation deleted: ${req.params.id}`);
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error deleting recitation:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to delete recitation' });
   }
 });
 

@@ -17,6 +17,7 @@ import cron from 'node-cron';
 import { Resend } from 'resend';
 import { getDb } from './db.js';
 import { listTodos, type Todo } from './todo.js';
+import { listRecitations, type Recitation } from './recitations.js';
 
 /** Default briefing prompt used when none is saved. */
 const DEFAULT_PROMPT = `You are a personal productivity assistant. Given the following todo list, generate a daily briefing email that:
@@ -111,14 +112,33 @@ function formatTodosForPrompt(todos: Todo[]): string {
 }
 
 /**
+ * Formats the recitations list as plain text for inclusion in the Claude prompt.
+ */
+function formatRecitationsForPrompt(recitations: Recitation[]): string {
+  if (recitations.length === 0) return '';
+  return recitations.map((r, i) => {
+    let text = `${i + 1}. ${r.title}`;
+    if (r.content) {
+      text += `\n${r.content}`;
+    }
+    return text;
+  }).join('\n\n');
+}
+
+/**
  * Spawns the Claude CLI to generate the briefing content.
  * Uses `claude -p` for a one-shot print-mode call with no streaming.
  *
  * @returns The generated text, or null if the CLI call fails.
  */
-async function generateBriefingWithClaude(prompt: string, todos: Todo[]): Promise<string | null> {
+async function generateBriefingWithClaude(prompt: string, todos: Todo[], recitations: Recitation[]): Promise<string | null> {
   const todoText = formatTodosForPrompt(todos);
-  const fullPrompt = `${prompt}\n\nHere is my current todo list:\n\n${todoText}\n\nToday's date is ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}.`;
+  const recitationText = formatRecitationsForPrompt(recitations);
+  let fullPrompt = `${prompt}\n\nHere is my current todo list:\n\n${todoText}`;
+  if (recitationText) {
+    fullPrompt += `\n\nHere are my daily recitations (include these verbatim in the email):\n\n${recitationText}`;
+  }
+  fullPrompt += `\n\nToday's date is ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}.`;
 
   try {
     const proc = Bun.spawn(['claude', '-p', fullPrompt], {
@@ -183,9 +203,34 @@ function buildTodoListHtml(todos: Todo[]): string {
 }
 
 /**
+ * Builds the recitations HTML section for the email.
+ * Each recitation is rendered verbatim with its title and content.
+ */
+function buildRecitationsHtml(recitations: Recitation[]): string {
+  if (recitations.length === 0) return '';
+
+  const items = recitations.map(r => {
+    const contentHtml = r.content
+      ? `<div style="margin: 4px 0 0 0; white-space: pre-wrap; color: #444;">${escapeHtml(r.content)}</div>`
+      : '';
+    return `
+      <div style="margin-bottom: 16px; padding: 12px; background: #f9f9f9; border-left: 3px solid #667; border-radius: 4px;">
+        <strong style="color: #222;">${escapeHtml(r.title)}</strong>
+        ${contentHtml}
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <h3 style="color: #333; margin-top: 24px; border-top: 1px solid #eee; padding-top: 16px;">Daily Recitations</h3>
+    ${items}
+  `;
+}
+
+/**
  * Builds the complete email HTML from an AI briefing and the todo list.
  */
-function buildEmailHtml(aiBriefing: string | null, todos: Todo[]): string {
+function buildEmailHtml(aiBriefing: string | null, todos: Todo[], recitations: Recitation[]): string {
   const wrapper = (content: string) => `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto;">
       <h2 style="color: #333;">Daily Briefing</h2>
@@ -203,8 +248,9 @@ function buildEmailHtml(aiBriefing: string | null, todos: Todo[]): string {
     : '<p style="color: #666;">AI briefing unavailable. Here are your current todos:</p>';
 
   const todoSection = buildTodoListHtml(todos);
+  const recitationSection = buildRecitationsHtml(recitations);
 
-  return wrapper(briefingSection + todoSection);
+  return wrapper(briefingSection + todoSection + recitationSection);
 }
 
 /**
@@ -218,12 +264,13 @@ export async function sendDailyDigest(): Promise<void> {
   }
 
   const todos = listTodos().filter(t => !t.done);
+  const recitations = listRecitations();
   const prompt = getBriefingPrompt();
 
   // Generate AI briefing by spawning Claude CLI
-  const aiBriefing = await generateBriefingWithClaude(prompt, todos);
+  const aiBriefing = await generateBriefingWithClaude(prompt, todos, recitations);
 
-  const html = buildEmailHtml(aiBriefing, todos);
+  const html = buildEmailHtml(aiBriefing, todos, recitations);
   const resend = new Resend(config.apiKey);
 
   try {
