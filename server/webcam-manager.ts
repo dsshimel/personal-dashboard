@@ -46,6 +46,18 @@ export type OutputMode = 'grid' | 'fullscreen';
 /** Grid mode output FPS (fullscreen uses native fps). */
 const GRID_FPS = 15;
 
+/** Number of slots in the per-stream frame ring buffer. */
+const FRAME_BUFFER_SIZE = 4;
+
+/** Per-stream ring buffer that smooths bursty FFmpeg output into steady emission. */
+interface FrameBuffer {
+  frames: (string | null)[];
+  writeIndex: number;
+  readIndex: number;
+  count: number;
+  timer: ReturnType<typeof setInterval>;
+}
+
 /** Tracks an active FFmpeg streaming process. */
 interface FFmpegProcess {
   /** The Bun subprocess handle. */
@@ -79,6 +91,8 @@ export class WebcamManager extends EventEmitter {
   private quality: number;
   /** Cache of device capabilities to avoid repeated FFmpeg queries. */
   private deviceCapabilities: Map<string, { capabilities: DeviceMode[]; nativeMode: { width: number; height: number; fps: number; pixelFormat: string } | null }> = new Map();
+  /** Per-device frame buffers for smoothing output. */
+  private frameBuffers: Map<string, FrameBuffer> = new Map();
 
   /**
    * Creates a new WebcamManager.
@@ -312,6 +326,9 @@ export class WebcamManager extends EventEmitter {
         frameRate: outputFps,
       });
 
+      // Create frame buffer for smooth output at target FPS
+      this.createFrameBuffer(deviceId, outputFps);
+
       // Handle stderr for logging (FFmpeg outputs progress to stderr)
       this.handleStderr(deviceId, proc.stderr);
 
@@ -355,6 +372,7 @@ export class WebcamManager extends EventEmitter {
 
     try {
       console.log(`Stopping webcam stream for: ${deviceId}`);
+      this.destroyFrameBuffer(deviceId);
       stream.process.kill();
       this.activeStreams.delete(deviceId);
       this.emit('stream-stopped', { deviceId, code: 0 });
@@ -404,6 +422,7 @@ export class WebcamManager extends EventEmitter {
       log(`[WebcamManager] Killing FFmpeg process for ${deviceId}`);
       const oldProcess = stream.process;
       stream.process.kill();
+      this.destroyFrameBuffer(deviceId);
       this.activeStreams.delete(deviceId);
 
       log(`[WebcamManager] Waiting for old process to exit`);
@@ -493,10 +512,76 @@ export class WebcamManager extends EventEmitter {
   }
 
   /**
+   * Creates a frame buffer for a device that drains at a steady FPS interval.
+   *
+   * @param deviceId - The device to create a buffer for.
+   * @param fps - Target output frame rate.
+   */
+  private createFrameBuffer(deviceId: string, fps: number): void {
+    this.destroyFrameBuffer(deviceId);
+    const intervalMs = Math.round(1000 / fps);
+    const frames = new Array<string | null>(FRAME_BUFFER_SIZE).fill(null);
+
+    const timer = setInterval(() => {
+      const buf = this.frameBuffers.get(deviceId);
+      if (!buf || buf.count === 0) return;
+
+      const data = buf.frames[buf.readIndex];
+      buf.frames[buf.readIndex] = null;
+      buf.readIndex = (buf.readIndex + 1) % FRAME_BUFFER_SIZE;
+      buf.count--;
+
+      if (data) {
+        this.emit('frame', { deviceId, data });
+      }
+    }, intervalMs);
+
+    this.frameBuffers.set(deviceId, { frames, writeIndex: 0, readIndex: 0, count: 0, timer });
+  }
+
+  /**
+   * Pushes a frame into the ring buffer for a device.
+   * If the buffer is full, the oldest frame is overwritten.
+   *
+   * @param deviceId - The device that produced the frame.
+   * @param base64 - Base64-encoded JPEG frame data.
+   */
+  private pushFrame(deviceId: string, base64: string): void {
+    const buf = this.frameBuffers.get(deviceId);
+    if (!buf) {
+      this.emit('frame', { deviceId, data: base64 });
+      return;
+    }
+
+    buf.frames[buf.writeIndex] = base64;
+    buf.writeIndex = (buf.writeIndex + 1) % FRAME_BUFFER_SIZE;
+
+    if (buf.count < FRAME_BUFFER_SIZE) {
+      buf.count++;
+    } else {
+      // Overwrite oldest: advance read pointer
+      buf.readIndex = (buf.readIndex + 1) % FRAME_BUFFER_SIZE;
+    }
+  }
+
+  /**
+   * Destroys the frame buffer for a device, clearing its drain timer.
+   *
+   * @param deviceId - The device to destroy the buffer for.
+   */
+  private destroyFrameBuffer(deviceId: string): void {
+    const buf = this.frameBuffers.get(deviceId);
+    if (buf) {
+      clearInterval(buf.timer);
+      this.frameBuffers.delete(deviceId);
+    }
+  }
+
+  /**
    * Parses MJPEG frame stream from FFmpeg stdout.
    *
    * MJPEG frames are delimited by SOI (0xFFD8) and EOI (0xFFD9) markers.
-   * Extracts complete frames and emits them as base64-encoded JPEG.
+   * Extracts complete frames and pushes them into the frame buffer.
    *
    * @param deviceId - The device this stream is for.
    * @param stdout - The stdout ReadableStream from FFmpeg.
@@ -566,9 +651,9 @@ export class WebcamManager extends EventEmitter {
             }
           }
 
-          // Convert to base64 and emit
+          // Convert to base64 and push into frame buffer
           const base64 = btoa(String.fromCharCode(...frame));
-          this.emit('frame', { deviceId, data: base64 });
+          this.pushFrame(deviceId, base64);
         }
       }
     } catch (error) {

@@ -753,6 +753,147 @@ describe('WebcamManager', () => {
     });
   });
 
+  describe('FrameBuffer', () => {
+    let createFrameBuffer: (deviceId: string, fps: number) => void;
+    let pushFrame: (deviceId: string, base64: string) => void;
+    let destroyFrameBuffer: (deviceId: string) => void;
+    let frameBuffers: Map<string, { frames: (string | null)[]; writeIndex: number; readIndex: number; count: number; timer: ReturnType<typeof setInterval> }>;
+
+    beforeEach(() => {
+      const m = manager as unknown as {
+        createFrameBuffer: (deviceId: string, fps: number) => void;
+        pushFrame: (deviceId: string, base64: string) => void;
+        destroyFrameBuffer: (deviceId: string) => void;
+        frameBuffers: typeof frameBuffers;
+      };
+      createFrameBuffer = m.createFrameBuffer.bind(manager);
+      pushFrame = m.pushFrame.bind(manager);
+      destroyFrameBuffer = m.destroyFrameBuffer.bind(manager);
+      frameBuffers = m.frameBuffers;
+    });
+
+    afterEach(() => {
+      // Clean up any active timers
+      for (const [deviceId] of frameBuffers) {
+        destroyFrameBuffer(deviceId);
+      }
+    });
+
+    test('createFrameBuffer adds a buffer to the map', () => {
+      createFrameBuffer('test-device', 15);
+      expect(frameBuffers.has('test-device')).toBe(true);
+      const buf = frameBuffers.get('test-device')!;
+      expect(buf.count).toBe(0);
+      expect(buf.writeIndex).toBe(0);
+      expect(buf.readIndex).toBe(0);
+      expect(buf.frames.length).toBe(4);
+    });
+
+    test('destroyFrameBuffer removes the buffer', () => {
+      createFrameBuffer('test-device', 15);
+      expect(frameBuffers.has('test-device')).toBe(true);
+      destroyFrameBuffer('test-device');
+      expect(frameBuffers.has('test-device')).toBe(false);
+    });
+
+    test('destroyFrameBuffer is safe to call when no buffer exists', () => {
+      expect(() => destroyFrameBuffer('nonexistent')).not.toThrow();
+    });
+
+    test('pushFrame adds frames to the buffer', () => {
+      createFrameBuffer('test-device', 15);
+      pushFrame('test-device', 'frame1');
+      pushFrame('test-device', 'frame2');
+      const buf = frameBuffers.get('test-device')!;
+      expect(buf.count).toBe(2);
+      expect(buf.frames[0]).toBe('frame1');
+      expect(buf.frames[1]).toBe('frame2');
+    });
+
+    test('pushFrame overwrites oldest when buffer is full', () => {
+      createFrameBuffer('test-device', 15);
+      pushFrame('test-device', 'frame1');
+      pushFrame('test-device', 'frame2');
+      pushFrame('test-device', 'frame3');
+      pushFrame('test-device', 'frame4');
+      // Buffer is now full (size 4)
+      const buf = frameBuffers.get('test-device')!;
+      expect(buf.count).toBe(4);
+
+      // Push one more — should overwrite frame1
+      pushFrame('test-device', 'frame5');
+      expect(buf.count).toBe(4);
+      // readIndex should have advanced past the overwritten slot
+      expect(buf.frames[buf.readIndex]).toBe('frame2');
+    });
+
+    test('pushFrame falls back to direct emit when no buffer exists', () => {
+      const { events } = captureEvents<{ deviceId: string; data: string }>(manager, 'frame');
+      pushFrame('no-buffer-device', 'directFrame');
+      expect(events.length).toBe(1);
+      expect(events[0].data).toBe('directFrame');
+    });
+
+    test('buffer drains frames at steady interval', async () => {
+      const { events } = captureEvents<{ deviceId: string; data: string }>(manager, 'frame');
+
+      // 100 FPS = 10ms interval for fast testing
+      createFrameBuffer('test-device', 100);
+      pushFrame('test-device', 'frame1');
+      pushFrame('test-device', 'frame2');
+      pushFrame('test-device', 'frame3');
+
+      // No frames emitted synchronously
+      expect(events.length).toBe(0);
+
+      // Wait for drain timer ticks
+      await new Promise(resolve => setTimeout(resolve, 80));
+
+      expect(events.length).toBe(3);
+      expect(events[0].data).toBe('frame1');
+      expect(events[1].data).toBe('frame2');
+      expect(events[2].data).toBe('frame3');
+    });
+
+    test('empty buffer ticks do not emit frames', async () => {
+      const { events } = captureEvents<{ deviceId: string; data: string }>(manager, 'frame');
+
+      createFrameBuffer('test-device', 100);
+
+      // Wait for several timer ticks with empty buffer
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      expect(events.length).toBe(0);
+    });
+
+    test('createFrameBuffer destroys existing buffer for same device', () => {
+      createFrameBuffer('test-device', 15);
+      const buf1 = frameBuffers.get('test-device')!;
+      const timer1 = buf1.timer;
+
+      createFrameBuffer('test-device', 30);
+      const buf2 = frameBuffers.get('test-device')!;
+
+      // Should be a different buffer instance
+      expect(buf2).not.toBe(buf1);
+      expect(frameBuffers.size).toBe(1);
+    });
+
+    test('startStream creates a frame buffer', async () => {
+      installMockSpawn();
+      await manager.startStream('test-device');
+      expect(frameBuffers.has('test-device')).toBe(true);
+    });
+
+    test('stopStream destroys the frame buffer', async () => {
+      installMockSpawn();
+      await manager.startStream('test-device');
+      expect(frameBuffers.has('test-device')).toBe(true);
+      manager.stopStream('test-device');
+      expect(frameBuffers.has('test-device')).toBe(false);
+    });
+  });
+
   describe('Event Emission', () => {
     test('stream-stopped event includes exit code', async () => {
       const { events } = captureEvents<{ deviceId: string; code: number }>(manager, 'stream-stopped');

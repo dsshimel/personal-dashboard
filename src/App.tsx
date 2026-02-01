@@ -288,6 +288,14 @@ function App() {
   const sessionIdRef = useRef<string | null>(null)
   const activeProjectRef = useRef<Project | null>(null)
   const fullscreenOverlayRef = useRef<HTMLDivElement>(null)
+  const fullscreenImgRef = useRef<HTMLImageElement>(null)
+  const pinchStateRef = useRef({
+    startDist: 0, startScale: 1, lastScale: 1,
+    translateX: 0, translateY: 0,
+    startMidX: 0, startMidY: 0,
+    isPinching: false, isPanning: false,
+    panStartX: 0, panStartY: 0,
+  })
 
   /** Adds a new message to the terminal output. */
   const addMessage = useCallback((type: Message['type'], content: string) => {
@@ -1668,6 +1676,99 @@ function App() {
     }
   }, [])
 
+  // Pinch-to-zoom handlers for fullscreen webcam
+  const resetPinchZoom = useCallback(() => {
+    const state = pinchStateRef.current
+    state.lastScale = 1
+    state.translateX = 0
+    state.translateY = 0
+    state.isPinching = false
+    state.isPanning = false
+    if (fullscreenImgRef.current) {
+      fullscreenImgRef.current.style.transform = ''
+    }
+  }, [])
+
+  const getTouchDistance = (t1: React.Touch, t2: React.Touch) =>
+    Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY)
+
+  const applyTransform = useCallback((tx: number, ty: number, scale: number) => {
+    if (fullscreenImgRef.current) {
+      fullscreenImgRef.current.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`
+    }
+  }, [])
+
+  const handleFullscreenTouchStart = useCallback((e: React.TouchEvent) => {
+    const state = pinchStateRef.current
+    if (e.touches.length === 2) {
+      e.preventDefault()
+      state.isPanning = false
+      state.startDist = getTouchDistance(e.touches[0], e.touches[1])
+      state.startScale = state.lastScale
+      state.startMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2
+      state.startMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2
+      state.isPinching = true
+    } else if (e.touches.length === 1 && state.lastScale > 1.1) {
+      // Single-finger pan when zoomed in
+      state.isPanning = true
+      state.panStartX = e.touches[0].clientX
+      state.panStartY = e.touches[0].clientY
+    }
+  }, [])
+
+  const handleFullscreenTouchMove = useCallback((e: React.TouchEvent) => {
+    const state = pinchStateRef.current
+    if (e.touches.length === 2 && state.isPinching) {
+      e.preventDefault()
+      const currentDist = getTouchDistance(e.touches[0], e.touches[1])
+      const scale = Math.min(Math.max(state.startScale * (currentDist / state.startDist), 1), 5)
+
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2
+      state.translateX += midX - state.startMidX
+      state.translateY += midY - state.startMidY
+      state.startMidX = midX
+      state.startMidY = midY
+      state.lastScale = scale
+
+      applyTransform(state.translateX, state.translateY, scale)
+    } else if (e.touches.length === 1 && state.isPanning) {
+      e.preventDefault()
+      const dx = e.touches[0].clientX - state.panStartX
+      const dy = e.touches[0].clientY - state.panStartY
+      state.panStartX = e.touches[0].clientX
+      state.panStartY = e.touches[0].clientY
+      state.translateX += dx
+      state.translateY += dy
+
+      applyTransform(state.translateX, state.translateY, state.lastScale)
+    }
+  }, [applyTransform])
+
+  const handleFullscreenTouchEnd = useCallback((e: React.TouchEvent) => {
+    const state = pinchStateRef.current
+    if (state.isPinching && e.touches.length < 2) {
+      state.isPinching = false
+      // If one finger remains, start panning
+      if (e.touches.length === 1 && state.lastScale > 1.1) {
+        state.isPanning = true
+        state.panStartX = e.touches[0].clientX
+        state.panStartY = e.touches[0].clientY
+      }
+      // Snap back to 1x if close
+      if (state.lastScale < 1.1) {
+        resetPinchZoom()
+      }
+    }
+    if (e.touches.length === 0) {
+      state.isPanning = false
+      // Snap back if nearly unzoomed
+      if (state.lastScale < 1.1) {
+        resetPinchZoom()
+      }
+    }
+  }, [resetPinchZoom])
+
   /** Toggles fullscreen mode for a webcam feed, with browser fullscreen and orientation lock. */
   const toggleFullscreenWebcam = useCallback((deviceId: string | null, previousDeviceId?: string | null) => {
     setFullscreenWebcam(deviceId)
@@ -1688,6 +1789,7 @@ function App() {
     } else if (previousDeviceId) {
       // Exiting fullscreen - switch back to grid downscale
       setWebcamMode(previousDeviceId, 'grid')
+      resetPinchZoom()
 
       // Exit browser fullscreen if active
       if (document.fullscreenElement) {
@@ -1710,7 +1812,13 @@ function App() {
     } else if (!deviceId && orientation?.unlock) {
       orientation.unlock()
     }
-  }, [setWebcamMode])
+  }, [setWebcamMode, resetPinchZoom])
+
+  const handleFullscreenOverlayClick = useCallback(() => {
+    // Don't exit if zoomed in — require the exit button instead
+    if (pinchStateRef.current.lastScale > 1.1) return
+    if (fullscreenWebcam) toggleFullscreenWebcam(null, fullscreenWebcam)
+  }, [fullscreenWebcam, toggleFullscreenWebcam])
 
   // Handle escape key and browser fullscreen change to exit fullscreen
   useEffect(() => {
@@ -2634,12 +2742,12 @@ function App() {
 
         {/* Fullscreen webcam overlay */}
         {fullscreenWebcam && (
-          <div ref={fullscreenOverlayRef} className="webcam-fullscreen-overlay" onClick={() => toggleFullscreenWebcam(null, fullscreenWebcam)}>
+          <div ref={fullscreenOverlayRef} className="webcam-fullscreen-overlay" onClick={handleFullscreenOverlayClick}>
             <div className="webcam-fullscreen-header">
               <span>{webcamDevices.find(d => d.id === fullscreenWebcam)?.name || fullscreenWebcam}</span>
               <button
                 className="webcam-exit-fullscreen-button"
-                onClick={(e) => { e.stopPropagation(); toggleFullscreenWebcam(null, fullscreenWebcam); }}
+                onClick={(e) => { e.stopPropagation(); resetPinchZoom(); toggleFullscreenWebcam(null, fullscreenWebcam); }}
               >
                 Exit Fullscreen
               </button>
@@ -2651,10 +2759,14 @@ function App() {
               </div>
             ) : (
               <img
+                ref={fullscreenImgRef}
                 src={`data:image/jpeg;base64,${webcamFrames.get(fullscreenWebcam)}`}
                 alt={`Webcam feed: ${fullscreenWebcam}`}
                 className="webcam-fullscreen-video"
                 onClick={(e) => e.stopPropagation()}
+                onTouchStart={handleFullscreenTouchStart}
+                onTouchMove={handleFullscreenTouchMove}
+                onTouchEnd={handleFullscreenTouchEnd}
               />
             )}
           </div>
