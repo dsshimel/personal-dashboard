@@ -6,6 +6,8 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import './App.css'
 import { initClientTelemetry, reportWsReconnect } from './telemetry'
 
@@ -17,6 +19,15 @@ let idCounter = 0
 
 /** Generates a unique message ID combining timestamp and incrementing counter. */
 const generateId = () => `msg-${Date.now()}-${++idCounter}`
+
+/** Custom component overrides for ReactMarkdown to open links in new tabs. */
+const markdownComponents: Components = {
+  a: ({ href, children, ...props }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer" className="terminal-link" {...props}>
+      {children}
+    </a>
+  ),
+}
 
 /** Represents a terminal message displayed in the output area. */
 interface Message {
@@ -270,6 +281,10 @@ function App() {
   const [savingBriefingPrompt, setSavingBriefingPrompt] = useState(false)
   const [sendingTestBriefing, setSendingTestBriefing] = useState(false)
   const [briefingStatus, setBriefingStatus] = useState<string | null>(null)
+  const [briefingPreviewHtml, setBriefingPreviewHtml] = useState<string | null>(null)
+  const [briefingPreviewGeneratedAt, setBriefingPreviewGeneratedAt] = useState<string | null>(null)
+  const [generatingPreview, setGeneratingPreview] = useState(false)
+  const [briefingProgressSteps, setBriefingProgressSteps] = useState<string[]>([])
 
   // Refs for mutable values that shouldn't trigger re-renders
   const isRestartingRef = useRef(false)
@@ -465,6 +480,9 @@ function App() {
             break
           case 'log':
             addLogMessage(data.level, data.content, data.timestamp)
+            break
+          case 'briefing-progress':
+            setBriefingProgressSteps(prev => [...prev, data.content])
             break
         }
       } catch {
@@ -885,6 +903,21 @@ function App() {
     }
   }, [])
 
+  /** Fetches the latest saved briefing (if any). */
+  const fetchLatestBriefing = useCallback(async () => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/briefing/latest`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setBriefingPreviewHtml(data.html)
+        setBriefingPreviewGeneratedAt(data.createdAt)
+      }
+    } catch {
+      // No saved briefing, that's fine
+    }
+  }, [])
+
   /** Saves the briefing prompt. */
   const handleSaveBriefingPrompt = useCallback(async () => {
     setSavingBriefingPrompt(true)
@@ -930,6 +963,32 @@ function App() {
       setTimeout(() => setBriefingStatus(null), 3000)
     } finally {
       setSendingTestBriefing(false)
+    }
+  }, [])
+
+  /** Generates a briefing preview without sending email. */
+  const handleGeneratePreview = useCallback(async () => {
+    setGeneratingPreview(true)
+    setBriefingStatus(null)
+    setBriefingPreviewHtml(null)
+    setBriefingProgressSteps([])
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/briefing/generate`
+      const response = await fetch(apiUrl, { method: 'POST' })
+      if (response.ok) {
+        const data = await response.json()
+        setBriefingPreviewHtml(data.html)
+        setBriefingPreviewGeneratedAt(data.createdAt)
+      } else {
+        setBriefingStatus('Failed to generate preview')
+        setTimeout(() => setBriefingStatus(null), 3000)
+      }
+    } catch (error) {
+      console.error('Failed to generate briefing preview:', error)
+      setBriefingStatus('Failed to generate preview')
+      setTimeout(() => setBriefingStatus(null), 3000)
+    } finally {
+      setGeneratingPreview(false)
     }
   }, [])
 
@@ -1237,12 +1296,13 @@ function App() {
     }
   }, [activeProject, activeSubTab, fetchProjectConversations])
 
-  // Fetch briefing prompt when briefing tab is active
+  // Fetch briefing prompt and saved preview when briefing tab is active
   useEffect(() => {
     if (activeSubTab === 'briefing-editor') {
       fetchBriefingPrompt()
+      fetchLatestBriefing()
     }
-  }, [activeSubTab, fetchBriefingPrompt])
+  }, [activeSubTab, fetchBriefingPrompt, fetchLatestBriefing])
 
   // Fetch todos when todo tab is active
   useEffect(() => {
@@ -2014,7 +2074,15 @@ function App() {
                 {msg.type === 'input' && <span className="prompt">&gt; </span>}
                 {msg.type === 'error' && <span className="error-prefix">[ERROR] </span>}
                 {msg.type === 'status' && <span className="status-prefix">[STATUS] </span>}
-                <span className="message-content">{msg.content}</span>
+                {msg.type === 'output' ? (
+                  <div className="message-content markdown-content">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                      {msg.content}
+                    </ReactMarkdown>
+                  </div>
+                ) : (
+                  <span className="message-content">{msg.content}</span>
+                )}
               </div>
             )
           })}
@@ -2361,6 +2429,13 @@ function App() {
                   {savingBriefingPrompt ? 'Saving...' : 'Save Prompt'}
                 </button>
                 <button
+                  className="briefing-preview-button"
+                  onClick={handleGeneratePreview}
+                  disabled={generatingPreview}
+                >
+                  {generatingPreview ? 'Generating...' : 'Preview Briefing'}
+                </button>
+                <button
                   className="briefing-test-button"
                   onClick={handleSendTestBriefing}
                   disabled={sendingTestBriefing}
@@ -2379,6 +2454,42 @@ function App() {
 
               {briefingStatus && (
                 <div className="briefing-status">{briefingStatus}</div>
+              )}
+
+              {briefingProgressSteps.length > 0 && generatingPreview && (
+                <div className="briefing-progress-steps">
+                  {briefingProgressSteps.map((step, i) => (
+                    <div key={i} className={`briefing-progress-step ${i === briefingProgressSteps.length - 1 ? 'active' : 'done'}`}>
+                      <span className="briefing-progress-icon">{i === briefingProgressSteps.length - 1 ? '⟳' : '✓'}</span>
+                      {step}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {briefingPreviewHtml && (
+                <div className="briefing-preview">
+                  <div className="briefing-preview-header">
+                    <h3>Briefing Preview</h3>
+                    <div className="briefing-preview-meta">
+                      {briefingPreviewGeneratedAt && (
+                        <span className="briefing-preview-timestamp">
+                          Generated {new Date(briefingPreviewGeneratedAt).toLocaleString()}
+                        </span>
+                      )}
+                      <button
+                        className="briefing-discard-button"
+                        onClick={() => { setBriefingPreviewHtml(null); setBriefingProgressSteps([]); setBriefingPreviewGeneratedAt(null) }}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    className="briefing-preview-content"
+                    dangerouslySetInnerHTML={{ __html: briefingPreviewHtml }}
+                  />
+                </div>
               )}
             </>
           )}

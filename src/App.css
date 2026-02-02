@@ -557,6 +557,7 @@
 
 .message-output {
   color: #e0e0e0;
+  white-space: normal;
 }
 
 .message-error {
@@ -587,6 +588,163 @@
   word-break: break-word;
 }
 
+.message-content.markdown-content {
+  white-space: normal;
+}
+
+.terminal-link {
+  color: #60a5fa;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.terminal-link:hover {
+  color: #93bbfd;
+}
+
+/* ========== Markdown Content Styles ========== */
+
+.markdown-content p {
+  margin: 0.5em 0;
+}
+
+.markdown-content p:first-child {
+  margin-top: 0;
+}
+
+.markdown-content p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  color: #4ade80;
+  margin: 1em 0 0.5em;
+  line-height: 1.3;
+}
+
+.markdown-content h1:first-child,
+.markdown-content h2:first-child,
+.markdown-content h3:first-child {
+  margin-top: 0;
+}
+
+.markdown-content h1 { font-size: 1.4em; }
+.markdown-content h2 { font-size: 1.2em; }
+.markdown-content h3 { font-size: 1.1em; }
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 { font-size: 1em; }
+
+.markdown-content strong {
+  color: #fff;
+  font-weight: 700;
+}
+
+.markdown-content em {
+  color: #c0c0c0;
+  font-style: italic;
+}
+
+.markdown-content code {
+  background-color: #2a3f5f;
+  color: #f0e68c;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.markdown-content pre {
+  background-color: #0f1629;
+  border: 1px solid #2a3f5f;
+  border-radius: 6px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+
+.markdown-content pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: 0.9em;
+  color: #e0e0e0;
+  white-space: pre;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.markdown-content li {
+  margin: 0.25em 0;
+}
+
+.markdown-content li > p {
+  margin: 0;
+}
+
+.markdown-content li input[type="checkbox"] {
+  margin-right: 6px;
+  accent-color: #4ade80;
+}
+
+.markdown-content blockquote {
+  border-left: 3px solid #4ade80;
+  margin: 0.75em 0;
+  padding: 0.25em 0 0.25em 1em;
+  color: #a0a0a0;
+}
+
+.markdown-content blockquote p {
+  margin: 0;
+}
+
+.markdown-content hr {
+  border: none;
+  border-top: 1px solid #2a3f5f;
+  margin: 1em 0;
+}
+
+.markdown-content table {
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  width: 100%;
+  font-size: 0.9em;
+}
+
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid #2a3f5f;
+  padding: 6px 12px;
+  text-align: left;
+}
+
+.markdown-content th {
+  background-color: #16213e;
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.markdown-content td {
+  background-color: #1a1a2e;
+}
+
+.markdown-content del {
+  color: #888;
+}
+
+.markdown-content img {
+  max-width: 100%;
+  border-radius: 4px;
+}
+
 .processing-indicator {
   display: inline-block;
   animation: blink 1s infinite;
@@ -612,6 +770,11 @@
 .message-ready .message-content {
   color: #fde047;
   animation: shimmer 3s ease-in-out infinite;
+}
+
+.message-ready .message-content.markdown-content * {
+  color: inherit;
+  animation: inherit;
 }
 
 @keyframes shimmer {
@@ -2306,12 +2469,14 @@
 
 /* Daily Briefing */
 .briefing-container {
-  display: flex;
-  flex-direction: column;
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 16px;
-  gap: 12px;
+}
+
+.briefing-container > * + * {
+  margin-top: 12px;
 }
 
 .briefing-header h3 {
@@ -2417,4 +2582,105 @@
   color: #4ade80;
   font-size: 13px;
   padding: 6px 0;
+}
+
+.briefing-preview-button {
+  background: #a78bfa;
+  color: white;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.briefing-preview-button:hover {
+  background: #8b5cf6;
+}
+
+.briefing-preview-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.briefing-progress-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+}
+
+.briefing-progress-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+.briefing-progress-step.done {
+  color: #4ade80;
+}
+
+.briefing-progress-step.active {
+  color: #a78bfa;
+}
+
+.briefing-progress-icon {
+  font-size: 12px;
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.briefing-progress-step.active .briefing-progress-icon {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.briefing-preview {
+  margin-top: 16px;
+  border: 1px solid #3d3d5c;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.briefing-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #252542;
+  border-bottom: 1px solid #3d3d5c;
+}
+
+.briefing-preview-header h3 {
+  margin: 0;
+  font-size: 14px;
+  color: #a78bfa;
+}
+
+.briefing-preview-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.briefing-preview-timestamp {
+  color: #888;
+  font-size: 12px;
+}
+
+.briefing-preview-content {
+  padding: 16px;
+  background: #ffffff;
+  color: #222;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
 }
