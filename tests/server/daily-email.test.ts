@@ -12,6 +12,8 @@ import {
   initDailyEmailDb,
   getBriefingPrompt,
   setBriefingPrompt,
+  getLatestBriefing,
+  listBriefings,
 } from '../../server/daily-email';
 import { initDb, closeDb, setConfigDir } from '../../server/db';
 
@@ -95,6 +97,88 @@ describe('Daily Email Module', () => {
       // Verify we can still read/write
       setBriefingPrompt('test');
       expect(getBriefingPrompt()).toBe('test');
+    });
+
+    test('creates daily_briefings table', () => {
+      const db = require('../../server/db').getDb();
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='daily_briefings'").all();
+      expect(tables.length).toBe(1);
+    });
+  });
+
+  describe('getLatestBriefing', () => {
+    test('returns null when no briefings exist', () => {
+      expect(getLatestBriefing()).toBeNull();
+    });
+
+    test('returns the most recent briefing', () => {
+      const db = require('../../server/db').getDb();
+      db.prepare(`
+        INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run('b1', '<p>Old</p>', 'prompt1', 3, 0, 0, '2025-01-01T08:00:00Z');
+      db.prepare(`
+        INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run('b2', '<p>New</p>', 'prompt2', 5, 1, 1, '2025-01-02T08:00:00Z');
+
+      const latest = getLatestBriefing();
+      expect(latest).not.toBeNull();
+      expect(latest!.id).toBe('b2');
+      expect(latest!.html).toBe('<p>New</p>');
+      expect(latest!.prompt).toBe('prompt2');
+      expect(latest!.todoCount).toBe(5);
+      expect(latest!.hasWeather).toBe(true);
+      expect(latest!.hasRecitations).toBe(true);
+      expect(latest!.createdAt).toBe('2025-01-02T08:00:00Z');
+    });
+  });
+
+  describe('listBriefings', () => {
+    test('returns empty array when no briefings exist', () => {
+      expect(listBriefings()).toEqual([]);
+    });
+
+    test('returns briefings in reverse chronological order', () => {
+      const db = require('../../server/db').getDb();
+      for (let i = 1; i <= 5; i++) {
+        db.prepare(`
+          INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(`b${i}`, `<p>Briefing ${i}</p>`, 'prompt', i, 0, 0, `2025-01-0${i}T08:00:00Z`);
+      }
+
+      const briefings = listBriefings();
+      expect(briefings.length).toBe(5);
+      expect(briefings[0].id).toBe('b5');
+      expect(briefings[4].id).toBe('b1');
+    });
+
+    test('respects the limit parameter', () => {
+      const db = require('../../server/db').getDb();
+      for (let i = 1; i <= 10; i++) {
+        db.prepare(`
+          INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(`b${i}`, `<p>${i}</p>`, 'prompt', 0, 0, 0, `2025-01-${String(i).padStart(2, '0')}T08:00:00Z`);
+      }
+
+      const briefings = listBriefings(3);
+      expect(briefings.length).toBe(3);
+      expect(briefings[0].id).toBe('b10');
+    });
+
+    test('correctly converts boolean fields', () => {
+      const db = require('../../server/db').getDb();
+      db.prepare(`
+        INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run('b1', '<p>test</p>', 'prompt', 2, 1, 0, '2025-01-01T08:00:00Z');
+
+      const briefings = listBriefings();
+      expect(briefings[0].hasWeather).toBe(true);
+      expect(briefings[0].hasRecitations).toBe(false);
+      expect(briefings[0].todoCount).toBe(2);
     });
   });
 });

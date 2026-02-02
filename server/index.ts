@@ -13,8 +13,9 @@ import { ClaudeCodeManager } from './claude-code.js';
 import { loadProjects, addProject, removeProject, updateProjectConversation, listProjectConversations, addConversationToProject, removeConversationFromProject, initProjectsDb } from './projects.js';
 import { initCrmDb, listContacts, createContact, updateContact, deleteContact, listInteractions, createInteraction, deleteInteraction } from './crm.js';
 import { initTodoDb, listTodos, createTodo, updateTodo, deleteTodo } from './todo.js';
-import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest } from './daily-email.js';
+import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest, generateBriefingPreview, getLatestBriefing, listBriefings } from './daily-email.js';
 import { initRecitationsDb, listRecitations, createRecitation, updateRecitation, deleteRecitation } from './recitations.js';
+import { getWeatherLocation, setWeatherLocation, geocodeLocation, fetchConfiguredWeather } from './weather.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
 import { metricsMiddleware, metricsHandler, clientMetricsHandler, wsConnectionsActive, wsMessagesTotal, claudeCommandDuration, claudeCommandsTotal, claudeSessionsActive } from './telemetry.js';
@@ -506,6 +507,114 @@ app.post('/briefing/send-test', async (_req, res) => {
   } catch (error) {
     console.error('Error sending test briefing:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to send test briefing' });
+  }
+});
+
+app.get('/briefing/latest', (_req, res) => {
+  try {
+    const briefing = getLatestBriefing();
+    if (!briefing) {
+      res.status(404).json({ error: 'No briefings generated yet' });
+      return;
+    }
+    res.json(briefing);
+  } catch (error) {
+    console.error('Error getting latest briefing:', error);
+    res.status(500).json({ error: 'Failed to get latest briefing' });
+  }
+});
+
+app.get('/briefing/history', (_req, res) => {
+  try {
+    const briefings = listBriefings();
+    res.json(briefings);
+  } catch (error) {
+    console.error('Error listing briefings:', error);
+    res.status(500).json({ error: 'Failed to list briefings' });
+  }
+});
+
+app.post('/briefing/generate', async (_req, res) => {
+  try {
+    const briefing = await generateBriefingPreview((step: string) => {
+      const msg = JSON.stringify({
+        type: 'briefing-progress',
+        content: step,
+        timestamp: new Date().toISOString(),
+      });
+      for (const client of allClients) {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(msg);
+        }
+      }
+    });
+    res.json(briefing);
+  } catch (error) {
+    console.error('Error generating briefing preview:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to generate briefing preview' });
+  }
+});
+
+// --- Weather Endpoints ---
+
+app.get('/weather', async (_req, res) => {
+  try {
+    const weather = await fetchConfiguredWeather();
+    if (!weather) {
+      res.status(404).json({ error: 'No weather location configured. POST /weather/location to set one.' });
+      return;
+    }
+    res.json(weather);
+  } catch (error) {
+    console.error('Error fetching weather:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to fetch weather' });
+  }
+});
+
+app.get('/weather/location', (_req, res) => {
+  try {
+    const location = getWeatherLocation();
+    if (!location) {
+      res.status(404).json({ error: 'No weather location configured' });
+      return;
+    }
+    res.json(location);
+  } catch (error) {
+    console.error('Error getting weather location:', error);
+    res.status(500).json({ error: 'Failed to get weather location' });
+  }
+});
+
+app.post('/weather/location', async (req, res) => {
+  try {
+    const { name, latitude, longitude } = req.body;
+
+    if (name && !latitude && !longitude) {
+      // Geocode by name
+      const location = await geocodeLocation(name);
+      if (!location) {
+        res.status(404).json({ error: `Could not find location: ${name}` });
+        return;
+      }
+      setWeatherLocation(location);
+      console.log(`Weather location set to ${location.name} (${location.latitude}, ${location.longitude})`);
+      res.json(location);
+      return;
+    }
+
+    if (typeof latitude === 'number' && typeof longitude === 'number') {
+      const locationName = name || `${latitude}, ${longitude}`;
+      const location = { latitude, longitude, name: locationName };
+      setWeatherLocation(location);
+      console.log(`Weather location set to ${locationName}`);
+      res.json(location);
+      return;
+    }
+
+    res.status(400).json({ error: 'Provide either {name} for geocoding or {latitude, longitude} for exact coordinates' });
+  } catch (error) {
+    console.error('Error setting weather location:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to set weather location' });
   }
 });
 

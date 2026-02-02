@@ -18,6 +18,7 @@ import { Resend } from 'resend';
 import { getDb } from './db.js';
 import { listTodos, type Todo } from './todo.js';
 import { listRecitations, type Recitation } from './recitations.js';
+import { fetchConfiguredWeather, formatWeatherForPrompt } from './weather.js';
 
 /** Default briefing prompt used when none is saved. */
 const DEFAULT_PROMPT = `You are a personal productivity assistant. Given the following todo list, generate a daily briefing email that:
@@ -36,7 +37,7 @@ interface EmailConfig {
 }
 
 /**
- * Initializes the daily_email settings table.
+ * Initializes the settings table and daily_briefings table.
  *
  * @param db - The SQLite database instance.
  */
@@ -45,6 +46,17 @@ export function initDailyEmailDb(db: Database): void {
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    )
+  `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS daily_briefings (
+      id TEXT PRIMARY KEY,
+      html TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      todo_count INTEGER NOT NULL,
+      has_weather INTEGER NOT NULL DEFAULT 0,
+      has_recitations INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
     )
   `);
 }
@@ -131,10 +143,13 @@ function formatRecitationsForPrompt(recitations: Recitation[]): string {
  *
  * @returns The generated text, or null if the CLI call fails.
  */
-async function generateBriefingWithClaude(prompt: string, todos: Todo[], recitations: Recitation[]): Promise<string | null> {
+async function generateBriefingWithClaude(prompt: string, todos: Todo[], recitations: Recitation[], weatherText: string | null): Promise<string | null> {
   const todoText = formatTodosForPrompt(todos);
   const recitationText = formatRecitationsForPrompt(recitations);
   let fullPrompt = `${prompt}\n\nHere is my current todo list:\n\n${todoText}`;
+  if (weatherText) {
+    fullPrompt += `\n\nHere is the current weather and forecast:\n\n${weatherText}`;
+  }
   if (recitationText) {
     fullPrompt += `\n\nHere are my daily recitations (include these verbatim in the email):\n\n${recitationText}`;
   }
@@ -253,6 +268,123 @@ function buildEmailHtml(aiBriefing: string | null, todos: Todo[], recitations: R
   return wrapper(briefingSection + todoSection + recitationSection);
 }
 
+/** Row shape from the daily_briefings table. */
+interface DailyBriefingRow {
+  id: string;
+  html: string;
+  prompt: string;
+  todo_count: number;
+  has_weather: number;
+  has_recitations: number;
+  created_at: string;
+}
+
+/** A stored daily briefing. */
+export interface DailyBriefing {
+  id: string;
+  html: string;
+  prompt: string;
+  todoCount: number;
+  hasWeather: boolean;
+  hasRecitations: boolean;
+  createdAt: string;
+}
+
+/** Converts a DailyBriefingRow to a DailyBriefing. */
+function rowToBriefing(row: DailyBriefingRow): DailyBriefing {
+  return {
+    id: row.id,
+    html: row.html,
+    prompt: row.prompt,
+    todoCount: row.todo_count,
+    hasWeather: row.has_weather === 1,
+    hasRecitations: row.has_recitations === 1,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Gets the most recent saved briefing from the database.
+ * Returns null if no briefing has been generated yet.
+ */
+export function getLatestBriefing(): DailyBriefing | null {
+  const db = getDb();
+  const row = db.prepare('SELECT * FROM daily_briefings ORDER BY created_at DESC LIMIT 1').get() as DailyBriefingRow | null;
+  if (!row) return null;
+  return rowToBriefing(row);
+}
+
+/**
+ * Lists all saved briefings, most recent first.
+ *
+ * @param limit - Maximum number of briefings to return (default 20).
+ */
+export function listBriefings(limit = 20): DailyBriefing[] {
+  const db = getDb();
+  const rows = db.prepare('SELECT * FROM daily_briefings ORDER BY created_at DESC LIMIT ?').all(limit) as DailyBriefingRow[];
+  return rows.map(rowToBriefing);
+}
+
+/**
+ * Saves a generated briefing to the database.
+ */
+function saveBriefing(html: string, prompt: string, todoCount: number, hasWeather: boolean, hasRecitations: boolean): DailyBriefing {
+  const db = getDb();
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, html, prompt, todoCount, hasWeather ? 1 : 0, hasRecitations ? 1 : 0, now);
+  return { id, html, prompt, todoCount, hasWeather, hasRecitations, createdAt: now };
+}
+
+/** Optional callback for reporting progress during briefing generation. */
+export type BriefingProgressCallback = (step: string) => void;
+
+/**
+ * Generates the daily briefing HTML without sending an email.
+ * Saves the result to the daily_briefings table.
+ *
+ * @param onProgress - Optional callback invoked at each step.
+ * @returns The saved DailyBriefing record.
+ */
+export async function generateBriefingPreview(onProgress?: BriefingProgressCallback): Promise<DailyBriefing> {
+  onProgress?.('Loading todos and recitations...');
+  const todos = listTodos().filter(t => !t.done);
+  const recitations = listRecitations();
+  const prompt = getBriefingPrompt();
+
+  // Fetch weather data (non-fatal if it fails or is unconfigured)
+  onProgress?.('Fetching weather data...');
+  let weatherText: string | null = null;
+  let hasWeather = false;
+  try {
+    const weather = await fetchConfiguredWeather();
+    if (weather) {
+      weatherText = formatWeatherForPrompt(weather);
+      hasWeather = true;
+      onProgress?.(`Weather loaded for ${weather.location.name}`);
+    } else {
+      onProgress?.('No weather location configured, skipping weather');
+    }
+  } catch (error) {
+    console.error('Failed to fetch weather for briefing:', error);
+    onProgress?.('Weather fetch failed, continuing without weather');
+  }
+
+  // Generate AI briefing by spawning Claude CLI
+  onProgress?.('Generating briefing with Claude... (this is the slow part)');
+  const aiBriefing = await generateBriefingWithClaude(prompt, todos, recitations, weatherText);
+
+  onProgress?.('Building email HTML...');
+  const html = buildEmailHtml(aiBriefing, todos, recitations);
+
+  const briefing = saveBriefing(html, prompt, todos.length, hasWeather, recitations.length > 0);
+  onProgress?.('Briefing ready');
+  return briefing;
+}
+
 /**
  * Sends the daily digest email. Exported for testing and manual triggering.
  */
@@ -263,24 +395,17 @@ export async function sendDailyDigest(): Promise<void> {
     return;
   }
 
-  const todos = listTodos().filter(t => !t.done);
-  const recitations = listRecitations();
-  const prompt = getBriefingPrompt();
-
-  // Generate AI briefing by spawning Claude CLI
-  const aiBriefing = await generateBriefingWithClaude(prompt, todos, recitations);
-
-  const html = buildEmailHtml(aiBriefing, todos, recitations);
+  const briefing = await generateBriefingPreview();
   const resend = new Resend(config.apiKey);
 
   try {
     await resend.emails.send({
       from: config.from,
       to: config.to,
-      subject: `Daily Briefing: ${todos.length} item${todos.length !== 1 ? 's' : ''} — ${new Date().toLocaleDateString()}`,
-      html,
+      subject: `Daily Briefing: ${briefing.todoCount} item${briefing.todoCount !== 1 ? 's' : ''} — ${new Date().toLocaleDateString()}`,
+      html: briefing.html,
     });
-    console.log(`Daily briefing sent to ${config.to} with ${todos.length} todos (AI: ${aiBriefing ? 'yes' : 'no'})`);
+    console.log(`Daily briefing sent to ${config.to} with ${briefing.todoCount} todos`);
   } catch (error) {
     console.error('Failed to send daily briefing:', error);
   }
