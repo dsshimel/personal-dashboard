@@ -20,6 +20,7 @@ function createMockSpawn(opts?: { captureArgs?: boolean; stderrText?: string }) 
     if (opts?.captureArgs) capturedArgs = args;
     return {
       pid: 12345,
+      kill: mock(() => {}),
       stdout: new ReadableStream({ start(c) { c.close(); } }),
       stderr: new ReadableStream({
         start(c) {
