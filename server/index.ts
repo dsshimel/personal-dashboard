@@ -15,6 +15,7 @@ import { initCrmDb, listContacts, createContact, updateContact, deleteContact, l
 import { initTodoDb, listTodos, createTodo, updateTodo, deleteTodo } from './todo.js';
 import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest, generateBriefingPreview, getLatestBriefing, listBriefings } from './daily-email.js';
 import { initRecitationsDb, listRecitations, createRecitation, updateRecitation, deleteRecitation } from './recitations.js';
+import { initResearchDb, listTopics, createTopic, updateTopic, deleteTopic, listArticles, deleteArticle, generateResearchArticles } from './research.js';
 import { getWeatherLocation, setWeatherLocation, geocodeLocation, fetchConfiguredWeather } from './weather.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
@@ -32,6 +33,7 @@ initCrmDb(db);
 initTodoDb(db);
 initDailyEmailDb(db);
 initRecitationsDb(db);
+initResearchDb(db);
 
 startDailyEmailScheduler();
 
@@ -667,6 +669,90 @@ app.delete('/recitations/:id', (req, res) => {
   } catch (error) {
     console.error('Error deleting recitation:', error);
     res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to delete recitation' });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Research endpoints
+// ---------------------------------------------------------------------------
+
+app.get('/research/topics', (_req, res) => {
+  try {
+    const topics = listTopics();
+    res.json(topics);
+  } catch (error) {
+    console.error('Error listing topics:', error);
+    res.status(500).json({ error: 'Failed to list topics' });
+  }
+});
+
+app.post('/research/topics', (req, res) => {
+  try {
+    const { name, description } = req.body;
+    if (!name) {
+      res.status(400).json({ error: 'name is required' });
+      return;
+    }
+    const topic = createTopic({ name, description });
+    console.log(`Topic created: ${topic.id} (${topic.name})`);
+    res.json(topic);
+  } catch (error) {
+    console.error('Error creating topic:', error);
+    res.status(500).json({ error: 'Failed to create topic' });
+  }
+});
+
+app.put('/research/topics/:id', (req, res) => {
+  try {
+    const { name, description } = req.body;
+    const topic = updateTopic(req.params.id, { name, description });
+    console.log(`Topic updated: ${topic.id} (${topic.name})`);
+    res.json(topic);
+  } catch (error) {
+    console.error('Error updating topic:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to update topic' });
+  }
+});
+
+app.delete('/research/topics/:id', (req, res) => {
+  try {
+    deleteTopic(req.params.id);
+    console.log(`Topic deleted: ${req.params.id}`);
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error deleting topic:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to delete topic' });
+  }
+});
+
+app.get('/research/topics/:id/articles', (req, res) => {
+  try {
+    const articles = listArticles(req.params.id);
+    res.json(articles);
+  } catch (error) {
+    console.error('Error listing articles:', error);
+    res.status(500).json({ error: 'Failed to list articles' });
+  }
+});
+
+app.delete('/research/articles/:id', (req, res) => {
+  try {
+    deleteArticle(req.params.id);
+    console.log(`Article deleted: ${req.params.id}`);
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error deleting article:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to delete article' });
+  }
+});
+
+app.post('/research/generate', async (_req, res) => {
+  try {
+    const articles = await generateResearchArticles((step) => console.log(`[research] ${step}`));
+    res.json({ status: 'ok', articlesGenerated: articles.length, articles });
+  } catch (error) {
+    console.error('Error generating research:', error);
+    res.status(500).json({ error: 'Failed to generate research' });
   }
 });
 

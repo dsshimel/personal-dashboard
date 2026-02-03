@@ -95,7 +95,7 @@ interface WebcamDevice {
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 
 /** Currently active UI tab. */
-type Section = 'briefing' | 'crm' | 'diagnostics' | 'hardware' | 'recitations' | 'terminal' | 'todo'
+type Section = 'briefing' | 'crm' | 'diagnostics' | 'hardware' | 'recitations' | 'research' | 'terminal' | 'todo'
 type TerminalTab = 'terminal' | 'projects' | 'conversations'
 type HardwareTab = 'webcams'
 type DiagnosticsTab = 'logs' | 'client-perf' | 'server-perf'
@@ -103,7 +103,8 @@ type CrmTab = 'contacts'
 type TodoTab = 'todos'
 type BriefingTab = 'briefing-editor'
 type RecitationsTab = 'recitations-editor'
-type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab | RecitationsTab
+type ResearchTab = 'topics'
+type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab | RecitationsTab | ResearchTab
 
 // Keep alphabetized by section key
 const SECTION_TABS: Record<Section, SubTab[]> = {
@@ -112,6 +113,7 @@ const SECTION_TABS: Record<Section, SubTab[]> = {
   diagnostics: ['logs', 'client-perf', 'server-perf'],
   hardware: ['webcams'],
   recitations: ['recitations-editor'],
+  research: ['topics'],
   terminal: ['terminal', 'projects', 'conversations'],
   todo: ['todos'],
 }
@@ -125,6 +127,7 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
   projects: 'Projects',
   'recitations-editor': 'Recitations',
   'server-perf': 'Server Performance',
+  topics: 'Topics',
   logs: 'Server Logs',
   terminal: 'Terminal',
   todos: 'Todos',
@@ -138,6 +141,7 @@ const SECTION_LABELS: Record<Section, string> = {
   crm: 'Friend CRM',
   hardware: 'Hardware',
   recitations: 'Recitations',
+  research: 'Research',
   terminal: 'Terminal',
   todo: 'TODO List',
 }
@@ -177,6 +181,24 @@ interface RecitationItem {
   id: string
   title: string
   content: string | null
+  createdAt: string
+}
+
+/** A research topic. */
+interface ResearchTopic {
+  id: string
+  name: string
+  description: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+/** A research article belonging to a topic. */
+interface ResearchArticle {
+  id: string
+  topicId: string
+  title: string
+  content: string
   createdAt: string
 }
 
@@ -273,6 +295,17 @@ function App() {
   const [editRecitationTitle, setEditRecitationTitle] = useState('')
   const [editRecitationContent, setEditRecitationContent] = useState('')
   const [loadingRecitations, setLoadingRecitations] = useState(false)
+
+  // Research state
+  const [topics, setTopics] = useState<ResearchTopic[]>([])
+  const [newTopicName, setNewTopicName] = useState('')
+  const [newTopicDescription, setNewTopicDescription] = useState('')
+  const [editingTopic, setEditingTopic] = useState<ResearchTopic | null>(null)
+  const [editTopicName, setEditTopicName] = useState('')
+  const [editTopicDescription, setEditTopicDescription] = useState('')
+  const [loadingTopics, setLoadingTopics] = useState(false)
+  const [expandedTopicId, setExpandedTopicId] = useState<string | null>(null)
+  const [topicArticles, setTopicArticles] = useState<Record<string, ResearchArticle[]>>({})
 
   // Daily briefing state
   const [briefingPrompt, setBriefingPrompt] = useState('')
@@ -883,6 +916,133 @@ function App() {
     setEditRecitationContent('')
   }, [])
 
+  // --- Research data fetching ---
+
+  const fetchTopics = useCallback(async () => {
+    setLoadingTopics(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/research/topics`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setTopics(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch topics:', error)
+    } finally {
+      setLoadingTopics(false)
+    }
+  }, [])
+
+  const fetchArticlesForTopic = useCallback(async (topicId: string) => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/research/topics/${topicId}/articles`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setTopicArticles(prev => ({ ...prev, [topicId]: data }))
+      }
+    } catch (error) {
+      console.error('Failed to fetch articles:', error)
+    }
+  }, [])
+
+  const handleCreateTopic = useCallback(async () => {
+    if (!newTopicName.trim()) return
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/research/topics`
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newTopicName.trim(),
+          description: newTopicDescription.trim() || undefined,
+        }),
+      })
+      if (response.ok) {
+        setNewTopicName('')
+        setNewTopicDescription('')
+        fetchTopics()
+      }
+    } catch (error) {
+      console.error('Failed to create topic:', error)
+    }
+  }, [newTopicName, newTopicDescription, fetchTopics])
+
+  const handleUpdateTopic = useCallback(async () => {
+    if (!editingTopic || !editTopicName.trim()) return
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/research/topics/${editingTopic.id}`
+      const response = await fetch(apiUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editTopicName.trim(),
+          description: editTopicDescription.trim() || null,
+        }),
+      })
+      if (response.ok) {
+        setEditingTopic(null)
+        setEditTopicName('')
+        setEditTopicDescription('')
+        fetchTopics()
+      }
+    } catch (error) {
+      console.error('Failed to update topic:', error)
+    }
+  }, [editingTopic, editTopicName, editTopicDescription, fetchTopics])
+
+  const handleDeleteTopic = useCallback(async (id: string) => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/research/topics/${id}`
+      const response = await fetch(apiUrl, { method: 'DELETE' })
+      if (response.ok) {
+        if (editingTopic?.id === id) {
+          setEditingTopic(null)
+        }
+        if (expandedTopicId === id) {
+          setExpandedTopicId(null)
+        }
+        fetchTopics()
+      }
+    } catch (error) {
+      console.error('Failed to delete topic:', error)
+    }
+  }, [editingTopic, expandedTopicId, fetchTopics])
+
+  const handleStartEditTopic = useCallback((topic: ResearchTopic) => {
+    setEditingTopic(topic)
+    setEditTopicName(topic.name)
+    setEditTopicDescription(topic.description || '')
+  }, [])
+
+  const handleCancelEditTopic = useCallback(() => {
+    setEditingTopic(null)
+    setEditTopicName('')
+    setEditTopicDescription('')
+  }, [])
+
+  const handleToggleTopicArticles = useCallback(async (topicId: string) => {
+    if (expandedTopicId === topicId) {
+      setExpandedTopicId(null)
+    } else {
+      setExpandedTopicId(topicId)
+      await fetchArticlesForTopic(topicId)
+    }
+  }, [expandedTopicId, fetchArticlesForTopic])
+
+  const handleDeleteArticle = useCallback(async (articleId: string, topicId: string) => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/research/articles/${articleId}`
+      const response = await fetch(apiUrl, { method: 'DELETE' })
+      if (response.ok) {
+        await fetchArticlesForTopic(topicId)
+      }
+    } catch (error) {
+      console.error('Failed to delete article:', error)
+    }
+  }, [fetchArticlesForTopic])
+
   // --- Daily briefing data fetching ---
 
   /** Fetches the current briefing prompt. */
@@ -1317,6 +1477,13 @@ function App() {
       fetchRecitations()
     }
   }, [activeSubTab, fetchRecitations])
+
+  // Fetch topics when research tab is active
+  useEffect(() => {
+    if (activeSubTab === 'topics') {
+      fetchTopics()
+    }
+  }, [activeSubTab, fetchTopics])
 
   // Fetch contacts when CRM tab is active
   useEffect(() => {
@@ -2647,6 +2814,139 @@ function App() {
                           &times;
                         </button>
                       </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Research Topics - always mounted, hidden when inactive */}
+        <div className={`recitations-container ${activeSubTab !== 'topics' ? 'tab-hidden' : ''}`}>
+          <div className="recitations-add-form">
+            <input
+              className="recitations-input"
+              type="text"
+              placeholder="Topic name..."
+              value={newTopicName}
+              onChange={e => setNewTopicName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleCreateTopic()}
+            />
+            <textarea
+              className="recitations-textarea"
+              placeholder="Description (optional)..."
+              value={newTopicDescription}
+              onChange={e => setNewTopicDescription(e.target.value)}
+              rows={3}
+            />
+            <button
+              className="recitations-add-button"
+              onClick={handleCreateTopic}
+              disabled={!newTopicName.trim()}
+            >
+              Add Topic
+            </button>
+          </div>
+
+          {loadingTopics && topics.length === 0 && (
+            <div className="welcome-message">Loading topics...</div>
+          )}
+
+          {!loadingTopics && topics.length === 0 && (
+            <div className="welcome-message">
+              No research topics yet.
+              <br />
+              Add one above to start generating daily research articles.
+            </div>
+          )}
+
+          {topics.length > 0 && (
+            <div className="recitations-list">
+              {topics.map(topic => (
+                <div key={topic.id} className="recitation-item">
+                  {editingTopic?.id === topic.id ? (
+                    <div className="recitation-edit-form">
+                      <input
+                        className="recitations-input"
+                        type="text"
+                        value={editTopicName}
+                        onChange={e => setEditTopicName(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleUpdateTopic()}
+                      />
+                      <textarea
+                        className="recitations-textarea"
+                        value={editTopicDescription}
+                        onChange={e => setEditTopicDescription(e.target.value)}
+                        rows={4}
+                      />
+                      <div className="recitation-edit-actions">
+                        <button className="recitations-save-button" onClick={handleUpdateTopic} disabled={!editTopicName.trim()}>
+                          Save
+                        </button>
+                        <button className="recitations-cancel-button" onClick={handleCancelEditTopic}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="recitation-item-header">
+                        <span className="recitation-title" style={{ cursor: 'pointer' }} onClick={() => handleToggleTopicArticles(topic.id)}>
+                          {expandedTopicId === topic.id ? '▼' : '▶'} {topic.name}
+                        </span>
+                        <span className="recitation-date">{formatDate(topic.createdAt)}</span>
+                      </div>
+                      {topic.description && (
+                        <div className="recitation-content">{topic.description}</div>
+                      )}
+                      <div className="recitation-actions">
+                        <button
+                          className="recitation-edit-button"
+                          onClick={() => handleStartEditTopic(topic)}
+                          title="Edit topic"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="recitation-delete-button"
+                          onClick={() => handleDeleteTopic(topic.id)}
+                          title="Delete topic"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                      {expandedTopicId === topic.id && (
+                        <div className="topic-articles" style={{ marginTop: '8px', paddingLeft: '16px', borderLeft: '2px solid #333' }}>
+                          {!topicArticles[topic.id] && (
+                            <div style={{ color: '#888', fontSize: '12px' }}>Loading articles...</div>
+                          )}
+                          {topicArticles[topic.id]?.length === 0 && (
+                            <div style={{ color: '#888', fontSize: '12px' }}>No articles yet. Articles are generated during the daily briefing.</div>
+                          )}
+                          {topicArticles[topic.id]?.map(article => (
+                            <div key={article.id} style={{ marginBottom: '12px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <strong style={{ fontSize: '13px' }}>{article.title}</strong>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                  <span style={{ color: '#888', fontSize: '11px' }}>{formatDate(article.createdAt)}</span>
+                                  <button
+                                    className="recitation-delete-button"
+                                    onClick={() => handleDeleteArticle(article.id, topic.id)}
+                                    title="Delete article"
+                                  >
+                                    &times;
+                                  </button>
+                                </div>
+                              </div>
+                              <div
+                                style={{ fontSize: '12px', color: '#ccc', marginTop: '4px', lineHeight: '1.5' }}
+                                dangerouslySetInnerHTML={{ __html: article.content }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </>
                   )}
                 </div>
