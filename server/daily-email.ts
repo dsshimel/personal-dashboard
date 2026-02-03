@@ -19,7 +19,6 @@ import { getDb } from './db.js';
 import { listTodos, type Todo } from './todo.js';
 import { listRecitations, type Recitation } from './recitations.js';
 import { fetchConfiguredWeather, formatWeatherForPrompt } from './weather.js';
-import { listTopics, generateResearchArticles, type Article } from './research.js';
 
 /** Default briefing prompt used when none is saved. */
 const DEFAULT_PROMPT = `You are a personal productivity assistant. Given the following todo list, generate a daily briefing email that:
@@ -107,11 +106,11 @@ function getEmailConfig(): EmailConfig | null {
 }
 
 /**
- * Formats the todo list as plain text for inclusion in the Claude prompt.
+ * Builds an HTML section for the todo list to append to the email.
  */
-function formatTodosForPrompt(todos: Todo[]): string {
-  if (todos.length === 0) return '(No todos on the list)';
-  return todos.map((todo, i) => {
+function buildTodosHtml(todos: Todo[]): string {
+  if (todos.length === 0) return '';
+  const items = todos.map(todo => {
     const date = new Date(todo.createdAt).toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
@@ -119,50 +118,33 @@ function formatTodosForPrompt(todos: Todo[]): string {
     });
     const ageMs = Date.now() - new Date(todo.createdAt).getTime();
     const ageDays = Math.floor(ageMs / (1000 * 60 * 60 * 24));
-    return `${i + 1}. ${todo.description} (added ${date}, ${ageDays} day${ageDays !== 1 ? 's' : ''} ago)`;
+    const ageLabel = `${ageDays} day${ageDays !== 1 ? 's' : ''} ago`;
+    return `<li style="margin-bottom: 6px;">${todo.description} <span style="color: #888; font-size: 12px;">(added ${date}, ${ageLabel})</span></li>`;
   }).join('\n');
-}
-
-/**
- * Formats the recitations list as plain text for inclusion in the Claude prompt.
- */
-function formatRecitationsForPrompt(recitations: Recitation[]): string {
-  if (recitations.length === 0) return '';
-  return recitations.map((r, i) => {
-    let text = `${i + 1}. ${r.title}`;
-    if (r.content) {
-      text += `\n${r.content}`;
-    }
-    return text;
-  }).join('\n\n');
-}
-
-/**
- * Formats research articles as plain text for inclusion in the Claude prompt.
- */
-function formatResearchForPrompt(articles: Article[]): string {
-  if (articles.length === 0) return '';
-  return articles.map((a, i) => {
-    return `${i + 1}. ${a.title}\n${a.content}`;
-  }).join('\n\n');
-}
-
-/**
- * Builds the research section HTML for the email.
- */
-function buildResearchHtml(articles: Article[]): string {
-  if (articles.length === 0) return '';
-  const articleItems = articles.map(a => `
-    <div style="margin-bottom: 20px;">
-      <h4 style="color: #333; margin-bottom: 8px;">${a.title}</h4>
-      <div style="color: #444; line-height: 1.6;">${a.content}</div>
-    </div>
-  `).join('');
 
   return `
-    <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
-    <h3 style="color: #333;">Today's Research</h3>
-    ${articleItems}
+    <hr style="border: none; border-top: 1px solid #ddd; margin: 24px 0;">
+    <h3 style="color: #333; margin-bottom: 12px;">TODO List</h3>
+    <ul style="color: #444; line-height: 1.6; padding-left: 20px;">${items}</ul>
+  `;
+}
+
+/**
+ * Builds an HTML section for recitations to append to the email.
+ */
+function buildRecitationsHtml(recitations: Recitation[]): string {
+  if (recitations.length === 0) return '';
+  const items = recitations.map(r => {
+    const content = r.content
+      ? `<br><span style="color: #666; font-size: 13px; white-space: pre-wrap;">${r.content}</span>`
+      : '';
+    return `<li style="margin-bottom: 10px;"><strong>${r.title}</strong>${content}</li>`;
+  }).join('\n');
+
+  return `
+    <hr style="border: none; border-top: 1px solid #ddd; margin: 24px 0;">
+    <h3 style="color: #333; margin-bottom: 12px;">Recitations</h3>
+    <ul style="color: #444; line-height: 1.6; padding-left: 20px; list-style: none;">${items}</ul>
   `;
 }
 
@@ -172,19 +154,10 @@ function buildResearchHtml(articles: Article[]): string {
  *
  * @returns The generated text, or null if the CLI call fails.
  */
-async function generateBriefingWithClaude(prompt: string, todos: Todo[], recitations: Recitation[], weatherText: string | null, researchArticles: Article[] = []): Promise<string | null> {
-  const todoText = formatTodosForPrompt(todos);
-  const recitationText = formatRecitationsForPrompt(recitations);
-  const researchText = formatResearchForPrompt(researchArticles);
-  let fullPrompt = `${prompt}\n\nHere is my current todo list:\n\n${todoText}`;
+async function generateBriefingWithClaude(prompt: string, weatherText: string | null): Promise<string | null> {
+  let fullPrompt = prompt;
   if (weatherText) {
     fullPrompt += `\n\nHere is the current weather and forecast:\n\n${weatherText}`;
-  }
-  if (recitationText) {
-    fullPrompt += `\n\nHere are my daily recitations for context:\n\n${recitationText}`;
-  }
-  if (researchText) {
-    fullPrompt += `\n\nHere are today's research articles:\n\n${researchText}`;
   }
   fullPrompt += `\n\nToday's date is ${new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}.`;
 
@@ -224,7 +197,7 @@ async function generateBriefingWithClaude(prompt: string, todos: Todo[], recitat
 /**
  * Builds the complete email HTML from an AI briefing and the todo list.
  */
-function buildEmailHtml(aiBriefing: string | null, todos: Todo[], researchArticles: Article[] = []): string {
+function buildEmailHtml(aiBriefing: string | null, todos: Todo[], recitations: Recitation[]): string {
   const wrapper = (content: string) => `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto;">
       <h2 style="color: #333;">Daily Briefing</h2>
@@ -233,17 +206,14 @@ function buildEmailHtml(aiBriefing: string | null, todos: Todo[], researchArticl
     </div>
   `;
 
-  if (todos.length === 0 && researchArticles.length === 0) {
-    return wrapper(aiBriefing || '<p style="color: #666;">No todos on your list. Enjoy your day!</p>');
-  }
-
   const briefingSection = aiBriefing
     ? `<div style="color: #444; line-height: 1.6;">${aiBriefing}</div>`
-    : '<p style="color: #666;">AI briefing unavailable. Here are your current todos:</p>';
+    : '<p style="color: #666;">AI briefing unavailable.</p>';
 
-  const researchSection = buildResearchHtml(researchArticles);
+  const todosSection = buildTodosHtml(todos);
+  const recitationsSection = buildRecitationsHtml(recitations);
 
-  return wrapper(briefingSection + researchSection);
+  return wrapper(briefingSection + todosSection + recitationsSection);
 }
 
 /** Row shape from the daily_briefings table. */
@@ -266,7 +236,6 @@ export interface DailyBriefing {
   todoCount: number;
   hasWeather: boolean;
   hasRecitations: boolean;
-  hasResearch: boolean;
   createdAt: string;
 }
 
@@ -279,7 +248,6 @@ function rowToBriefing(row: DailyBriefingRow): DailyBriefing {
     todoCount: row.todo_count,
     hasWeather: row.has_weather === 1,
     hasRecitations: row.has_recitations === 1,
-    hasResearch: row.has_research === 1,
     createdAt: row.created_at,
   };
 }
@@ -309,15 +277,15 @@ export function listBriefings(limit = 20): DailyBriefing[] {
 /**
  * Saves a generated briefing to the database.
  */
-function saveBriefing(html: string, prompt: string, todoCount: number, hasWeather: boolean, hasRecitations: boolean, hasResearch: boolean): DailyBriefing {
+function saveBriefing(html: string, prompt: string, todoCount: number, hasWeather: boolean, hasRecitations: boolean): DailyBriefing {
   const db = getDb();
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   db.prepare(`
-    INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, has_research, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, html, prompt, todoCount, hasWeather ? 1 : 0, hasRecitations ? 1 : 0, hasResearch ? 1 : 0, now);
-  return { id, html, prompt, todoCount, hasWeather, hasRecitations, hasResearch, createdAt: now };
+    INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, html, prompt, todoCount, hasWeather ? 1 : 0, hasRecitations ? 1 : 0, now);
+  return { id, html, prompt, todoCount, hasWeather, hasRecitations, createdAt: now };
 }
 
 /** Optional callback for reporting progress during briefing generation. */
@@ -354,29 +322,14 @@ export async function generateBriefingPreview(onProgress?: BriefingProgressCallb
     onProgress?.('Weather fetch failed, continuing without weather');
   }
 
-  // Generate research articles (non-fatal if it fails)
-  let researchArticles: Article[] = [];
-  const topics = listTopics();
-  if (topics.length > 0) {
-    onProgress?.('Generating research articles...');
-    try {
-      researchArticles = await generateResearchArticles(onProgress);
-    } catch (error) {
-      console.error('Failed to generate research articles:', error);
-      onProgress?.('Research generation failed, continuing without research');
-    }
-  } else {
-    onProgress?.('No research topics configured, skipping research');
-  }
-
   // Generate AI briefing by spawning Claude CLI
   onProgress?.('Generating briefing with Claude... (this is the slow part)');
-  const aiBriefing = await generateBriefingWithClaude(prompt, todos, recitations, weatherText, researchArticles);
+  const aiBriefing = await generateBriefingWithClaude(prompt, weatherText);
 
   onProgress?.('Building email HTML...');
-  const html = buildEmailHtml(aiBriefing, todos, researchArticles);
+  const html = buildEmailHtml(aiBriefing, todos, recitations);
 
-  const briefing = saveBriefing(html, prompt, todos.length, hasWeather, recitations.length > 0, researchArticles.length > 0);
+  const briefing = saveBriefing(html, prompt, todos.length, hasWeather, recitations.length > 0);
   onProgress?.('Briefing ready');
   return briefing;
 }

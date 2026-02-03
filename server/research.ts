@@ -106,7 +106,7 @@ function rowToArticle(row: ArticleRow): Article {
 export function listTopics(): Topic[] {
   const db = getDb();
   const rows = db.prepare(
-    'SELECT * FROM research_topics ORDER BY created_at DESC'
+    'SELECT * FROM research_topics ORDER BY created_at DESC, rowid DESC'
   ).all() as TopicRow[];
   return rows.map(rowToTopic);
 }
@@ -201,7 +201,7 @@ export function deleteTopic(id: string): void {
 export function listArticles(topicId: string): Article[] {
   const db = getDb();
   const rows = db.prepare(
-    'SELECT * FROM research_articles WHERE topic_id = ? ORDER BY created_at DESC'
+    'SELECT * FROM research_articles WHERE topic_id = ? ORDER BY created_at DESC, rowid DESC'
   ).all(topicId) as ArticleRow[];
   return rows.map(rowToArticle);
 }
