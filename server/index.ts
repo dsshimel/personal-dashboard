@@ -213,6 +213,11 @@ app.get('/health', (_req, res) => {
   res.json({ status: 'ok', connections: managers.size });
 });
 
+// Heartbeat endpoint for restart watcher monitoring
+app.get('/heartbeat', (_req, res) => {
+  res.json({ status: 'ok', timestamp: Date.now() });
+});
+
 // Restart the server (signals the watcher process to restart)
 app.post('/restart', async (_req, res) => {
   console.log('Restart requested - signaling watcher process...');

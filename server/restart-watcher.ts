@@ -20,6 +20,78 @@ const isWindows = process.platform === 'win32';
 /** The currently running app process. */
 let appProcess: ReturnType<typeof spawn> | null = null;
 
+/** Heartbeat check interval handle. */
+let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+
+/** Heartbeat configuration. */
+const HEARTBEAT_INTERVAL_MS = 10_000;
+const HEARTBEAT_TIMEOUT_MS = 3_000;
+const HEARTBEAT_GRACE_PERIOD_MS = 15_000;
+
+/** Endpoints to check for heartbeats. */
+const HEARTBEAT_ENDPOINTS = [
+  { name: 'Express', url: 'http://localhost:4001/heartbeat' },
+  { name: 'Vite', url: 'http://localhost:6969/' },
+];
+
+/** Whether a restart is currently in progress. */
+let restartInProgress = false;
+
+/**
+ * Checks a single heartbeat endpoint.
+ * Returns true if healthy, false if unhealthy.
+ */
+async function checkHeartbeat(endpoint: { name: string; url: string }): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), HEARTBEAT_TIMEOUT_MS);
+    const response = await fetch(endpoint.url, { signal: controller.signal });
+    clearTimeout(timeout);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Checks all heartbeat endpoints and triggers a restart if any are unhealthy.
+ */
+async function checkAllHeartbeats() {
+  if (restartInProgress || !appProcess) return;
+
+  const results = await Promise.all(
+    HEARTBEAT_ENDPOINTS.map(async (ep) => ({
+      ...ep,
+      healthy: await checkHeartbeat(ep),
+    }))
+  );
+
+  const failed = results.filter((r) => !r.healthy);
+  if (failed.length > 0) {
+    console.log(`[Watcher] Heartbeat failed for: ${failed.map((f) => f.name).join(', ')}`);
+    stopHeartbeatMonitor();
+    restart();
+  }
+}
+
+/** Starts the heartbeat monitor after a grace period. */
+function startHeartbeatMonitor() {
+  stopHeartbeatMonitor();
+  console.log(`[Watcher] Heartbeat monitor will start after ${HEARTBEAT_GRACE_PERIOD_MS / 1000}s grace period`);
+  setTimeout(() => {
+    console.log(`[Watcher] Heartbeat monitor active (checking every ${HEARTBEAT_INTERVAL_MS / 1000}s)`);
+    heartbeatInterval = setInterval(checkAllHeartbeats, HEARTBEAT_INTERVAL_MS);
+  }, HEARTBEAT_GRACE_PERIOD_MS);
+}
+
+/** Stops the heartbeat monitor. */
+function stopHeartbeatMonitor() {
+  if (heartbeatInterval) {
+    clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+  }
+}
+
 /**
  * Kills any processes listening on the app's ports.
  * Uses platform-specific commands (taskkill on Windows, fuser on Linux).
@@ -49,6 +121,7 @@ function killProcessesOnPorts() {
 /** Starts the app by running `bun run prod:all`. */
 function startApp() {
   console.log('[Watcher] Starting app with bun run prod:all...');
+  restartInProgress = false;
 
   appProcess = spawn('bun', ['run', 'prod:all'], {
     cwd: WORKING_DIR,
@@ -59,12 +132,17 @@ function startApp() {
   appProcess.on('exit', (code) => {
     console.log(`[Watcher] App process exited with code ${code}`);
     appProcess = null;
+    stopHeartbeatMonitor();
   });
+
+  startHeartbeatMonitor();
 }
 
 /** Handles restart by stopping current app, killing ports, and restarting. */
 function restart() {
-  console.log('[Watcher] Restart signal received!');
+  console.log('[Watcher] Restart triggered!');
+  restartInProgress = true;
+  stopHeartbeatMonitor();
 
   // Kill the current app process tree
   if (appProcess) {
@@ -120,6 +198,7 @@ setTimeout(() => {
 // Handle graceful shutdown
 process.on('SIGINT', () => {
   console.log('[Watcher] Shutting down...');
+  stopHeartbeatMonitor();
   watcher.close();
   if (appProcess) {
     if (isWindows) {
@@ -135,6 +214,7 @@ process.on('SIGINT', () => {
 
 process.on('SIGTERM', () => {
   console.log('[Watcher] Shutting down...');
+  stopHeartbeatMonitor();
   watcher.close();
   if (appProcess) {
     if (isWindows) {
