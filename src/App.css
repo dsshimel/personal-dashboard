@@ -318,6 +318,13 @@
   padding: 0 16px;
   gap: 4px;
   flex-shrink: 0;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.tab-bar::-webkit-scrollbar {
+  display: none;
 }
 
 .tab {
@@ -333,6 +340,8 @@
   font-family: inherit;
   cursor: pointer;
   transition: all 0.2s ease;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .tab:hover {
@@ -379,6 +388,7 @@
   background-color: #2a3f5f;
   margin: 6px 8px;
   align-self: stretch;
+  flex-shrink: 0;
 }
 
 .tab-processing-dot {
