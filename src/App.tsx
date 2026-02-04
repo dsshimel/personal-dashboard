@@ -356,6 +356,7 @@ function App() {
   const previousActiveWebcamsRef = useRef<Set<string>>(new Set())
   const changingResolutionRef = useRef<Set<string>>(new Set())
   const terminalTabsRef = useRef<TerminalTabState[]>([])
+  const activeTerminalTabIdRef = useRef<string | null>(null)
   const fullscreenOverlayRef = useRef<HTMLDivElement>(null)
   const fullscreenImgRef = useRef<HTMLImageElement>(null)
   const pinchStateRef = useRef({
@@ -366,10 +367,13 @@ function App() {
     panStartX: 0, panStartY: 0,
   })
 
-  // Keep terminalTabsRef in sync
+  // Keep refs in sync
   useEffect(() => {
     terminalTabsRef.current = terminalTabs
   }, [terminalTabs])
+  useEffect(() => {
+    activeTerminalTabIdRef.current = activeTerminalTabId
+  }, [activeTerminalTabId])
 
   /** Derived: the currently active terminal tab. */
   const activeTerminalTab = useMemo(() =>
@@ -575,7 +579,7 @@ function App() {
               const updated = prev.map(tab =>
                 tab.id === tabId ? { ...tab, sessionId: data.content } : tab
               )
-              persistTabs(updated, activeTerminalTabId)
+              persistTabs(updated, activeTerminalTabIdRef.current)
               return updated
             })
             addTabMessage(tabId, 'status', `Conversation: ${data.content}`)
@@ -610,7 +614,7 @@ function App() {
     ws.onerror = (event) => {
       console.error('[WS] Error:', event)
     }
-  }, [addLogMessage, updateTab, addTabMessage, persistTabs, activeTerminalTabId])
+  }, [addLogMessage, updateTab, addTabMessage, persistTabs])
 
   /**
    * Establishes WebSocket connection to the webcam server (port 3002).

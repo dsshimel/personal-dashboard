@@ -702,3 +702,123 @@ describe('Health Endpoint (multi-tab)', () => {
     expect(response.tabs).toBe(3);
   });
 });
+
+// ============================================================================
+// Single Connection Multi-Tab (no reconnection needed per tab switch)
+// ============================================================================
+
+describe('Single Connection Multi-Tab', () => {
+  test('all tabs share one WebSocket connection', () => {
+    const ws = new MockWebSocket();
+    const connectionTabs = new Map<MockWebSocket, Set<string>>();
+    const tabManagers = new Map<string, MockClaudeCodeManager>();
+
+    // Simulate opening multiple tabs on the same connection
+    connectionTabs.set(ws, new Set());
+    for (const tabId of ['tab-a', 'tab-b', 'tab-c']) {
+      const manager = new MockClaudeCodeManager(`/project-${tabId}`);
+      tabManagers.set(tabId, manager);
+      connectionTabs.get(ws)!.add(tabId);
+    }
+
+    // Only one connection, three tabs
+    expect(connectionTabs.size).toBe(1);
+    expect(connectionTabs.get(ws)!.size).toBe(3);
+    expect(tabManagers.size).toBe(3);
+  });
+
+  test('switching active tab does not require new connection', () => {
+    const ws = new MockWebSocket();
+    const tabManagers = new Map<string, MockClaudeCodeManager>();
+
+    // Set up two tabs on one connection
+    const managerA = new MockClaudeCodeManager('/a');
+    const managerB = new MockClaudeCodeManager('/b');
+    tabManagers.set('tab-a', managerA);
+    tabManagers.set('tab-b', managerB);
+
+    // "Switch" to tab-b and send a command - same ws, just different tabId
+    const tabId = 'tab-b';
+    const manager = tabManagers.get(tabId);
+    expect(manager).toBe(managerB);
+
+    ws.send(JSON.stringify({ type: 'command', content: 'hello', tabId }));
+
+    const msg = JSON.parse(ws.sentMessages[0]);
+    expect(msg.tabId).toBe('tab-b');
+    expect(msg.content).toBe('hello');
+
+    // "Switch" to tab-a and send a command - still same ws
+    const tabId2 = 'tab-a';
+    const manager2 = tabManagers.get(tabId2);
+    expect(manager2).toBe(managerA);
+
+    ws.send(JSON.stringify({ type: 'command', content: 'world', tabId: tabId2 }));
+
+    const msg2 = JSON.parse(ws.sentMessages[1]);
+    expect(msg2.tabId).toBe('tab-a');
+    expect(msg2.content).toBe('world');
+
+    // Still only 2 messages on 1 connection
+    expect(ws.sentMessages.length).toBe(2);
+  });
+
+  test('reconnect resumes all tabs on single new connection', () => {
+    const tabSessions = new Map<string, string>();
+    tabSessions.set('tab-a', 'session-1');
+    tabSessions.set('tab-b', 'session-2');
+    tabSessions.set('tab-c', 'session-3');
+
+    // Simulate reconnection: new WebSocket, resume all tabs
+    const newWs = new MockWebSocket();
+    const resumeMessages: Array<{ type: string; tabId: string; sessionId: string }> = [];
+
+    for (const [tabId, sessionId] of tabSessions.entries()) {
+      const msg = { type: 'resume', tabId, sessionId, workingDirectory: `/project-${tabId}` };
+      newWs.send(JSON.stringify(msg));
+      resumeMessages.push(msg);
+    }
+
+    // All 3 tabs resumed on single connection
+    expect(newWs.sentMessages.length).toBe(3);
+    const parsed = newWs.getJsonMessages() as Array<{ type: string; tabId: string; sessionId: string }>;
+    expect(parsed.every(m => m.type === 'resume')).toBe(true);
+    expect(new Set(parsed.map(m => m.tabId))).toEqual(new Set(['tab-a', 'tab-b', 'tab-c']));
+    expect(parsed.find(m => m.tabId === 'tab-a')!.sessionId).toBe('session-1');
+    expect(parsed.find(m => m.tabId === 'tab-b')!.sessionId).toBe('session-2');
+    expect(parsed.find(m => m.tabId === 'tab-c')!.sessionId).toBe('session-3');
+  });
+
+  test('interleaved messages from multiple tabs on single connection are correctly tagged', () => {
+    const ws = new MockWebSocket();
+    const managerA = new MockClaudeCodeManager('/a');
+    const managerB = new MockClaudeCodeManager('/b');
+
+    // Attach both managers to same ws with different tabIds
+    const outputHandlerA = (data: { type: string; content: string }) => {
+      ws.send(JSON.stringify({ ...data, tabId: 'tab-a' }));
+    };
+    const outputHandlerB = (data: { type: string; content: string }) => {
+      ws.send(JSON.stringify({ ...data, tabId: 'tab-b' }));
+    };
+    managerA.on('output', outputHandlerA);
+    managerB.on('output', outputHandlerB);
+
+    // Interleaved output from both managers
+    managerA.emit('output', { type: 'output', content: 'A1' });
+    managerB.emit('output', { type: 'output', content: 'B1' });
+    managerA.emit('output', { type: 'output', content: 'A2' });
+    managerB.emit('output', { type: 'output', content: 'B2' });
+    managerA.emit('output', { type: 'status', content: 'processing' });
+
+    const parsed = ws.getJsonMessages() as Array<{ type: string; content: string; tabId: string }>;
+    expect(parsed.length).toBe(5);
+
+    // Verify ordering and correct tab tagging
+    expect(parsed[0]).toEqual({ type: 'output', content: 'A1', tabId: 'tab-a' });
+    expect(parsed[1]).toEqual({ type: 'output', content: 'B1', tabId: 'tab-b' });
+    expect(parsed[2]).toEqual({ type: 'output', content: 'A2', tabId: 'tab-a' });
+    expect(parsed[3]).toEqual({ type: 'output', content: 'B2', tabId: 'tab-b' });
+    expect(parsed[4]).toEqual({ type: 'status', content: 'processing', tabId: 'tab-a' });
+  });
+});
