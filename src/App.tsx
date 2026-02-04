@@ -91,6 +91,37 @@ interface WebcamDevice {
   type: 'video' | 'audio'
 }
 
+/** An image pending upload alongside a command. */
+interface PendingImage {
+  id: string
+  data: string  // base64 data (without data URL prefix)
+  name: string  // generated filename
+  preview: string  // data URL for display
+}
+
+/** State for a single terminal tab (one per active project). */
+interface TerminalTabState {
+  id: string                    // unique tab ID, e.g. `tab-${projectId}`
+  projectId: string
+  projectName: string
+  workingDirectory: string
+  messages: Message[]
+  sessionId: string | null
+  lastMessageId: number
+  status: ConnectionStatus
+  currentTool: string | null
+  pendingImages: PendingImage[]
+}
+
+/** Serializable subset of TerminalTabState for localStorage persistence. */
+interface StoredTerminalTab {
+  id: string
+  projectId: string
+  projectName: string
+  workingDirectory: string
+  sessionId: string | null
+}
+
 /** WebSocket connection and processing state. */
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 
@@ -219,18 +250,11 @@ interface BufferedMessage {
  * server log viewing, and webcam streaming functionality.
  */
 function App() {
-  // Terminal state
-  const [messages, setMessages] = useState<Message[]>([])
+  // Multi-terminal tab state
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTabState[]>([])
+  const [activeTerminalTabId, setActiveTerminalTabId] = useState<string | null>(null)
   const [input, setInput] = useState('')
-  const [pendingImages, setPendingImages] = useState<Array<{
-    id: string
-    data: string  // base64 data (without data URL prefix)
-    name: string  // generated filename
-    preview: string  // data URL for display
-  }>>([])
-  const [status, setStatus] = useState<ConnectionStatus>('disconnected')
-  const [currentTool, setCurrentTool] = useState<string | null>(null)
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [wsConnected, setWsConnected] = useState(false)
 
   // Server logs state
   const [logMessages, setLogMessages] = useState<LogMessage[]>([])
@@ -261,7 +285,6 @@ function App() {
 
   // Projects state
   const [projects, setProjects] = useState<Project[]>([])
-  const [activeProject, setActiveProject] = useState<Project | null>(null)
   const [newProjectPath, setNewProjectPath] = useState('')
   const [loadingProjects, setLoadingProjects] = useState(false)
   const [projectConversations, setProjectConversations] = useState<Session[]>([])
@@ -332,9 +355,7 @@ function App() {
   const webcamReconnectTimeoutRef = useRef<number | null>(null)
   const previousActiveWebcamsRef = useRef<Set<string>>(new Set())
   const changingResolutionRef = useRef<Set<string>>(new Set())
-  const lastMessageIdRef = useRef<number>(0)
-  const sessionIdRef = useRef<string | null>(null)
-  const activeProjectRef = useRef<Project | null>(null)
+  const terminalTabsRef = useRef<TerminalTabState[]>([])
   const fullscreenOverlayRef = useRef<HTMLDivElement>(null)
   const fullscreenImgRef = useRef<HTMLImageElement>(null)
   const pinchStateRef = useRef({
@@ -345,15 +366,62 @@ function App() {
     panStartX: 0, panStartY: 0,
   })
 
-  /** Adds a new message to the terminal output. */
-  const addMessage = useCallback((type: Message['type'], content: string) => {
+  // Keep terminalTabsRef in sync
+  useEffect(() => {
+    terminalTabsRef.current = terminalTabs
+  }, [terminalTabs])
+
+  /** Derived: the currently active terminal tab. */
+  const activeTerminalTab = useMemo(() =>
+    terminalTabs.find(t => t.id === activeTerminalTabId) || null,
+    [terminalTabs, activeTerminalTabId]
+  )
+
+  /** Persists current terminal tabs to localStorage. */
+  const persistTabs = useCallback((tabs: TerminalTabState[], activeId: string | null) => {
+    const stored: StoredTerminalTab[] = tabs.map(t => ({
+      id: t.id,
+      projectId: t.projectId,
+      projectName: t.projectName,
+      workingDirectory: t.workingDirectory,
+      sessionId: t.sessionId,
+    }))
+    localStorage.setItem('terminalTabs', JSON.stringify(stored))
+    if (activeId) {
+      localStorage.setItem('activeTerminalTabId', activeId)
+    } else {
+      localStorage.removeItem('activeTerminalTabId')
+    }
+  }, [])
+
+  /** Updates a specific tab's state by ID. */
+  const updateTab = useCallback((tabId: string, updates: Partial<TerminalTabState>) => {
+    setTerminalTabs(prev => {
+      const next = prev.map(tab =>
+        tab.id === tabId ? { ...tab, ...updates } : tab
+      )
+      return next
+    })
+  }, [])
+
+  /** Appends a message to a specific tab. */
+  const addTabMessage = useCallback((tabId: string, type: Message['type'], content: string) => {
     const message: Message = {
       id: generateId(),
       type,
       content,
       timestamp: new Date(),
     }
-    setMessages(prev => [...prev, message])
+    setTerminalTabs(prev => prev.map(tab =>
+      tab.id === tabId ? { ...tab, messages: [...tab.messages, message] } : tab
+    ))
+  }, [])
+
+  /** Adds a new message to the terminal output (legacy - adds to active tab). */
+  const addMessage = useCallback((type: Message['type'], content: string) => {
+    // Used by non-tab-specific code (sidebar grafana restart, etc.)
+    // These status messages are logged to console but don't go to a specific tab
+    console.log(`[App] ${type}: ${content}`)
   }, [])
 
   /** Adds a new log entry to the server logs tab. */
@@ -369,104 +437,77 @@ function App() {
 
   /**
    * Establishes WebSocket connection to the main server.
-   * Handles reconnection, session resumption, and message synchronization.
+   * Handles reconnection and session resumption for all open tabs.
    */
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
-    setStatus('connecting')
+    setWsConnected(false)
 
     // Use current hostname for Tailscale compatibility
     const wsUrl = `ws://${window.location.hostname}:4001`
     console.log('[WS] Connecting to:', wsUrl)
-    addMessage('status', `Connecting to ${wsUrl}...`)
 
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
     ws.onopen = async () => {
       console.log('[WS] Connected')
-      setStatus('connected')
+      setWsConnected(true)
 
-      // Check for existing session: first from ref, then from localStorage
-      // Also check restartSessionId for page reload after server restart
-      const restartSessionId = localStorage.getItem('restartSessionId')
-      const currentSession = sessionIdRef.current || localStorage.getItem('currentSessionId') || restartSessionId
-      const lastId = lastMessageIdRef.current
-      const needsHistoryReload = !!restartSessionId || lastId === 0
+      // Resume all open tabs' sessions
+      const tabs = terminalTabsRef.current
+      for (const tab of tabs) {
+        if (tab.sessionId) {
+          console.log(`[WS] Resuming tab ${tab.id} session ${tab.sessionId}`)
+          ws.send(JSON.stringify({
+            type: 'resume',
+            sessionId: tab.sessionId,
+            workingDirectory: tab.workingDirectory,
+            tabId: tab.id,
+          }))
 
-      // Clear restart session ID if present
-      if (restartSessionId) {
-        localStorage.removeItem('restartSessionId')
-      }
-
-      if (currentSession) {
-        console.log(`[WS] Reconnecting to session ${currentSession}, last message ID: ${lastId}, needsHistoryReload: ${needsHistoryReload}`)
-
-        // Resume the session on the server
-        const resumeMsg: Record<string, string> = { type: 'resume', sessionId: currentSession }
-        if (activeProjectRef.current) {
-          resumeMsg.workingDirectory = activeProjectRef.current.directory
-        }
-        ws.send(JSON.stringify(resumeMsg))
-        setSessionId(currentSession)
-        sessionIdRef.current = currentSession
-        localStorage.setItem('currentSessionId', currentSession)
-
-        // If page was reloaded or no message ID, fetch full conversation history
-        if (needsHistoryReload) {
-          try {
-            const res = await fetch(`http://${window.location.hostname}:4001/sessions/${currentSession}/history`)
-            const history: Array<{ type: 'input' | 'output' | 'error' | 'status'; content: string; timestamp: string }> = await res.json()
-            const restoredMessages: Message[] = history.map(msg => ({
-              id: generateId(),
-              type: msg.type,
-              content: msg.content,
-              timestamp: new Date(msg.timestamp),
-            }))
-            setMessages(restoredMessages)
-            addMessage('status', `Restored conversation with ${history.length} messages`)
-          } catch (err) {
-            console.error('Failed to fetch session history:', err)
-            addMessage('status', `Resumed conversation: ${currentSession.slice(0, 8)}...`)
-          }
-        } else {
-          // We have a last message ID, fetch any missed messages
-          try {
-            const res = await fetch(
-              `http://${window.location.hostname}:4001/sessions/${currentSession}/messages?since=${lastId}`
-            )
-            const data: { messages: BufferedMessage[]; latestId: number } = await res.json()
-
-            if (data.messages.length > 0) {
-              console.log(`[WS] Fetched ${data.messages.length} missed messages`)
-              // Add missed messages to the UI
-              data.messages.forEach(msg => {
-                if (msg.type === 'output' || msg.type === 'error') {
-                  addMessage(msg.type, msg.content)
-                } else if (msg.type === 'status') {
-                  if (msg.content === 'processing') {
-                    setStatus('processing')
-                  } else if (msg.content === 'connected') {
-                    setStatus('connected')
-                  }
-                } else if (msg.type === 'complete') {
-                  setStatus('connected')
-                }
-              })
-              // Update the last message ID
-              lastMessageIdRef.current = data.latestId
-              addMessage('status', `Reconnected and fetched ${data.messages.length} missed message(s)`)
-            } else {
-              addMessage('status', 'Reconnected to Claude Code server')
+          // Fetch full conversation history for each tab
+          const needsHistoryReload = tab.lastMessageId === 0
+          if (needsHistoryReload) {
+            try {
+              const res = await fetch(`http://${window.location.hostname}:4001/sessions/${tab.sessionId}/history`)
+              const history: Array<{ type: 'input' | 'output' | 'error' | 'status'; content: string; timestamp: string }> = await res.json()
+              const restoredMessages: Message[] = history.map(msg => ({
+                id: generateId(),
+                type: msg.type,
+                content: msg.content,
+                timestamp: new Date(msg.timestamp),
+              }))
+              updateTab(tab.id, { messages: restoredMessages, status: 'connected' })
+              addTabMessage(tab.id, 'status', `Restored conversation with ${history.length} messages`)
+            } catch (err) {
+              console.error(`Failed to fetch history for tab ${tab.id}:`, err)
+              addTabMessage(tab.id, 'status', `Resumed conversation: ${tab.sessionId!.slice(0, 8)}...`)
             }
-          } catch (err) {
-            console.error('Failed to fetch missed messages:', err)
-            addMessage('status', 'Reconnected to Claude Code server')
+          } else {
+            // Fetch missed messages
+            try {
+              const res = await fetch(
+                `http://${window.location.hostname}:4001/sessions/${tab.sessionId}/messages?since=${tab.lastMessageId}`
+              )
+              const data: { messages: BufferedMessage[]; latestId: number } = await res.json()
+              if (data.messages.length > 0) {
+                for (const msg of data.messages) {
+                  if (msg.type === 'output' || msg.type === 'error') {
+                    addTabMessage(tab.id, msg.type, msg.content)
+                  } else if (msg.type === 'complete') {
+                    updateTab(tab.id, { status: 'connected', currentTool: null })
+                  }
+                }
+                updateTab(tab.id, { lastMessageId: data.latestId })
+                addTabMessage(tab.id, 'status', `Reconnected and fetched ${data.messages.length} missed message(s)`)
+              }
+            } catch (err) {
+              console.error(`Failed to fetch missed messages for tab ${tab.id}:`, err)
+            }
           }
         }
-      } else {
-        addMessage('status', 'Connected to Claude Code server')
       }
     }
 
@@ -474,58 +515,81 @@ function App() {
       try {
         const data = JSON.parse(event.data)
 
+        // Global messages (no tabId) - logs, briefing-progress, global status
+        if (!data.tabId) {
+          switch (data.type) {
+            case 'log':
+              addLogMessage(data.level, data.content, data.timestamp)
+              break
+            case 'briefing-progress':
+              setBriefingProgressSteps(prev => [...prev, data.content])
+              break
+            case 'status':
+              if (data.content === 'connected') {
+                setWsConnected(true)
+              } else if (data.content === 'restarting') {
+                // Mark all tabs as restarting
+                setTerminalTabs(prev => prev.map(tab => ({ ...tab, status: 'restarting' as ConnectionStatus })))
+              }
+              break
+          }
+          return
+        }
+
+        // Per-tab messages
+        const tabId = data.tabId as string
+
         // Track message ID if present (for reconnection support)
         if (data.id && typeof data.id === 'number') {
-          lastMessageIdRef.current = data.id
+          updateTab(tabId, { lastMessageId: data.id })
         }
 
         switch (data.type) {
           case 'output':
-            addMessage('output', data.content)
+            addTabMessage(tabId, 'output', data.content)
             break
           case 'error':
-            addMessage('error', data.content)
+            addTabMessage(tabId, 'error', data.content)
             break
           case 'status':
             if (data.content === 'processing') {
-              setStatus('processing')
-            } else if (data.content === 'connected') {
-              setStatus('connected')
-            } else if (data.content === 'restarting') {
-              setStatus('restarting')
-              addMessage('status', 'Server is restarting...')
+              updateTab(tabId, { status: 'processing' })
+            } else if (data.content === 'connected' || data.content === 'resumed') {
+              updateTab(tabId, { status: 'connected' })
             } else if (data.content === 'clear') {
-              setMessages([])
+              updateTab(tabId, { messages: [] })
+            } else if (data.content === 'reset') {
+              updateTab(tabId, { messages: [], sessionId: null, lastMessageId: 0, currentTool: null, status: 'connected' })
             }
             break
           case 'complete':
-            setStatus('connected')
-            setCurrentTool(null)
+            updateTab(tabId, { status: 'connected', currentTool: null })
             break
           case 'tool':
-            setCurrentTool(data.content)
+            updateTab(tabId, { currentTool: data.content })
             break
           case 'session':
-            setSessionId(data.content)
-            sessionIdRef.current = data.content
-            localStorage.setItem('currentSessionId', data.content)
-            addMessage('status', `Conversation: ${data.content}`)
-            break
-          case 'log':
-            addLogMessage(data.level, data.content, data.timestamp)
-            break
-          case 'briefing-progress':
-            setBriefingProgressSteps(prev => [...prev, data.content])
+            updateTab(tabId, { sessionId: data.content })
+            // Persist updated tabs to localStorage
+            setTerminalTabs(prev => {
+              const updated = prev.map(tab =>
+                tab.id === tabId ? { ...tab, sessionId: data.content } : tab
+              )
+              persistTabs(updated, activeTerminalTabId)
+              return updated
+            })
+            addTabMessage(tabId, 'status', `Conversation: ${data.content}`)
             break
         }
       } catch {
-        addMessage('output', event.data)
+        console.error('[WS] Failed to parse message:', event.data)
       }
     }
 
     ws.onclose = (event) => {
       console.log('[WS] Closed:', event.code, event.reason)
       wsRef.current = null
+      setWsConnected(false)
 
       // Don't auto-reconnect if we're restarting - the page will reload
       if (isRestartingRef.current) {
@@ -533,8 +597,8 @@ function App() {
         return
       }
 
-      setStatus('disconnected')
-      addMessage('status', `Disconnected (code: ${event.code}). Reconnecting in 3s...`)
+      // Mark all tabs as disconnected
+      setTerminalTabs(prev => prev.map(tab => ({ ...tab, status: 'disconnected' as ConnectionStatus })))
 
       // Auto-reconnect after 3 seconds
       reconnectTimeoutRef.current = window.setTimeout(() => {
@@ -545,9 +609,8 @@ function App() {
 
     ws.onerror = (event) => {
       console.error('[WS] Error:', event)
-      addMessage('error', `WebSocket error connecting to ${wsUrl}`)
     }
-  }, [addMessage, addLogMessage])
+  }, [addLogMessage, updateTab, addTabMessage, persistTabs, activeTerminalTabId])
 
   /**
    * Establishes WebSocket connection to the webcam server (port 3002).
@@ -724,16 +787,34 @@ function App() {
       const apiUrl = `http://${window.location.hostname}:4001/projects/${projectId}`
       const response = await fetch(apiUrl, { method: 'DELETE' })
       if (response.ok) {
-        if (activeProject?.id === projectId) {
-          setActiveProject(null)
-          localStorage.removeItem('activeProjectId')
+        // Close the terminal tab if this project is open
+        const tabId = `tab-${projectId}`
+        if (terminalTabsRef.current.some(t => t.id === tabId)) {
+          wsRef.current?.send(JSON.stringify({ type: 'tab-close', tabId }))
+          setTerminalTabs(prev => {
+            const next = prev.filter(t => t.id !== tabId)
+            setActiveTerminalTabId(current => {
+              if (current === tabId) {
+                if (next.length > 0) {
+                  persistTabs(next, next[next.length - 1].id)
+                  return next[next.length - 1].id
+                }
+                persistTabs(next, null)
+                setActiveSubTab('projects')
+                return null
+              }
+              persistTabs(next, current)
+              return current
+            })
+            return next
+          })
         }
         await fetchProjects()
       }
     } catch (error) {
       console.error('Failed to remove project:', error)
     }
-  }, [activeProject, fetchProjects])
+  }, [fetchProjects, persistTabs])
 
   /** Fetches conversations for a specific project. */
   const fetchProjectConversations = useCallback(async (projectId: string) => {
@@ -1332,24 +1413,48 @@ function App() {
     return 'very-stale'
   }, [])
 
-  /** Switches to a project: sets it active and resumes its last conversation. */
-  const handleSwitchProject = useCallback(async (project: Project) => {
-    setActiveProject(project)
-    localStorage.setItem('activeProjectId', project.id)
+  /** Activates a project: opens a new terminal tab for it (or switches to existing). */
+  const handleActivateProject = useCallback(async (project: Project) => {
+    const tabId = `tab-${project.id}`
 
-    // Reset current session state
-    setMessages([])
-    setSessionId(null)
-    sessionIdRef.current = null
-    lastMessageIdRef.current = 0
-    localStorage.removeItem('currentSessionId')
+    // Check if tab already exists - just switch to it
+    const existing = terminalTabsRef.current.find(t => t.id === tabId)
+    if (existing) {
+      setActiveTerminalTabId(tabId)
+      setActiveSubTab('terminal')
+      return
+    }
 
-    // If the project has a last conversation, resume it
+    // Create new tab
+    const newTab: TerminalTabState = {
+      id: tabId,
+      projectId: project.id,
+      projectName: project.name,
+      workingDirectory: project.directory,
+      messages: [],
+      sessionId: project.lastConversationId || null,
+      lastMessageId: 0,
+      status: 'connected',
+      currentTool: null,
+      pendingImages: [],
+    }
+
+    setTerminalTabs(prev => {
+      const next = [...prev, newTab]
+      persistTabs(next, tabId)
+      return next
+    })
+    setActiveTerminalTabId(tabId)
+    setActiveSubTab('terminal')
+
+    // Resume last conversation if exists
     if (project.lastConversationId) {
-      wsRef.current?.send(JSON.stringify({ type: 'resume', sessionId: project.lastConversationId, workingDirectory: project.directory }))
-      setSessionId(project.lastConversationId)
-      sessionIdRef.current = project.lastConversationId
-      localStorage.setItem('currentSessionId', project.lastConversationId)
+      wsRef.current?.send(JSON.stringify({
+        type: 'resume',
+        sessionId: project.lastConversationId,
+        workingDirectory: project.directory,
+        tabId,
+      }))
 
       // Fetch and restore conversation history
       try {
@@ -1361,42 +1466,42 @@ function App() {
           content: msg.content,
           timestamp: new Date(msg.timestamp),
         }))
-        setMessages(restoredMessages)
-        addMessage('status', `Switched to project: ${project.name}`)
+        updateTab(tabId, { messages: restoredMessages })
+        addTabMessage(tabId, 'status', `Opened project: ${project.name}`)
       } catch (err) {
         console.error('Failed to fetch conversation history:', err)
-        addMessage('status', `Switched to project: ${project.name}`)
+        addTabMessage(tabId, 'status', `Opened project: ${project.name}`)
       }
     } else {
-      // No previous conversation, just reset
-      wsRef.current?.send(JSON.stringify({ type: 'reset' }))
-      addMessage('status', `Switched to project: ${project.name} (new conversation)`)
+      addTabMessage(tabId, 'status', `Opened project: ${project.name} (new conversation)`)
     }
+  }, [updateTab, addTabMessage, persistTabs])
 
-    setActiveSubTab('terminal')
-  }, [addMessage])
+  /** Closes a terminal tab and cleans up server resources. */
+  const closeTerminalTab = useCallback((tabId: string) => {
+    // Send tab-close to server
+    wsRef.current?.send(JSON.stringify({ type: 'tab-close', tabId }))
 
-  /** Deactivates the current project so new conversations aren't associated with any project. */
-  const handleDeactivateProject = useCallback(() => {
-    setActiveProject(null)
-    localStorage.removeItem('activeProjectId')
-
-    // Reset session state
-    setMessages([])
-    setSessionId(null)
-    sessionIdRef.current = null
-    lastMessageIdRef.current = 0
-    localStorage.removeItem('currentSessionId')
-
-    wsRef.current?.send(JSON.stringify({ type: 'reset' }))
-    addMessage('status', 'Project deactivated — new conversations will not be associated with any project')
-    setActiveSubTab('terminal')
-  }, [addMessage])
-
-  // Keep activeProjectRef in sync with state for use in callbacks
-  useEffect(() => {
-    activeProjectRef.current = activeProject
-  }, [activeProject])
+    setTerminalTabs(prev => {
+      const next = prev.filter(t => t.id !== tabId)
+      // If this was the active tab, switch to another or go to projects
+      setActiveTerminalTabId(current => {
+        if (current === tabId) {
+          if (next.length > 0) {
+            const newActive = next[next.length - 1].id
+            persistTabs(next, newActive)
+            return newActive
+          }
+          persistTabs(next, null)
+          setActiveSubTab('projects')
+          return null
+        }
+        persistTabs(next, current)
+        return current
+      })
+      return next
+    })
+  }, [persistTabs])
 
   useEffect(() => {
     initClientTelemetry()
@@ -1420,26 +1525,51 @@ function App() {
     }
   }, [activeSubTab, fetchSessions])
 
-  // Fetch projects on mount and restore active project from localStorage
+  // Restore terminal tabs from localStorage on mount
   useEffect(() => {
-    fetchProjects().then(async () => {
-      const savedProjectId = localStorage.getItem('activeProjectId')
-      if (savedProjectId) {
-        try {
-          const apiUrl = `http://${window.location.hostname}:4001/projects`
-          const response = await fetch(apiUrl)
-          if (response.ok) {
-            const allProjects: Project[] = await response.json()
-            const saved = allProjects.find(p => p.id === savedProjectId)
-            if (saved) {
-              setActiveProject(saved)
-            }
-          }
-        } catch {
-          // Ignore - projects will load normally
+    const storedJson = localStorage.getItem('terminalTabs')
+    const storedActiveId = localStorage.getItem('activeTerminalTabId')
+    if (storedJson) {
+      try {
+        const stored: StoredTerminalTab[] = JSON.parse(storedJson)
+        const restored: TerminalTabState[] = stored.map(s => ({
+          id: s.id,
+          projectId: s.projectId,
+          projectName: s.projectName,
+          workingDirectory: s.workingDirectory,
+          messages: [],
+          sessionId: s.sessionId,
+          lastMessageId: 0,
+          status: 'connected' as ConnectionStatus,
+          currentTool: null,
+          pendingImages: [],
+        }))
+        setTerminalTabs(restored)
+        terminalTabsRef.current = restored
+        if (storedActiveId && restored.find(t => t.id === storedActiveId)) {
+          setActiveTerminalTabId(storedActiveId)
+          setActiveSubTab('terminal')
+        } else if (restored.length > 0) {
+          setActiveTerminalTabId(restored[0].id)
+          setActiveSubTab('terminal')
         }
+      } catch {
+        // Ignore invalid stored data
       }
-    })
+    } else {
+      // Migration: check for old activeProjectId format
+      const oldProjectId = localStorage.getItem('activeProjectId')
+      if (oldProjectId) {
+        localStorage.removeItem('activeProjectId')
+        localStorage.removeItem('currentSessionId')
+        // Will be restored when projects load via fetchProjects
+      }
+    }
+  }, [])
+
+  // Fetch projects on mount
+  useEffect(() => {
+    fetchProjects()
   }, [fetchProjects])
 
   // Fetch projects and conversations when projects tab is active
@@ -1449,12 +1579,12 @@ function App() {
     }
   }, [activeSubTab, fetchProjects])
 
-  // Fetch conversations when active project changes and projects tab is open
+  // Fetch conversations when viewing projects tab and a project tab is selected
   useEffect(() => {
-    if (activeProject && activeSubTab === 'projects') {
-      fetchProjectConversations(activeProject.id)
+    if (activeTerminalTab && activeSubTab === 'projects') {
+      fetchProjectConversations(activeTerminalTab.projectId)
     }
-  }, [activeProject, activeSubTab, fetchProjectConversations])
+  }, [activeTerminalTab, activeSubTab, fetchProjectConversations])
 
   // Fetch briefing prompt and saved preview when briefing tab is active
   useEffect(() => {
@@ -1511,24 +1641,25 @@ function App() {
     }
   }, [selectedContact, fetchInteractions])
 
+  // Active tab's messages for convenience
+  const activeTabMessages = activeTerminalTab?.messages || []
+
   // Index of the message that should get the gold "ready" highlight.
-  // Prefer the last output message; fall back to the last non-status message.
   const readyMessageIndex = useMemo(() => {
-    const lastOutput = messages.findLastIndex(m => m.type === 'output')
+    const lastOutput = activeTabMessages.findLastIndex(m => m.type === 'output')
     if (lastOutput !== -1) return lastOutput
-    // Fall back: last message that isn't a status line
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].type !== 'status') return i
+    for (let i = activeTabMessages.length - 1; i >= 0; i--) {
+      if (activeTabMessages[i].type !== 'status') return i
     }
-    return messages.length - 1
-  }, [messages])
+    return activeTabMessages.length - 1
+  }, [activeTabMessages])
 
   // Auto-scroll to bottom for terminal messages
   useEffect(() => {
     if (outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight
     }
-  }, [messages])
+  }, [activeTabMessages])
 
   // Auto-scroll to bottom for log messages
   useEffect(() => {
@@ -1573,10 +1704,12 @@ function App() {
 
   /** Sends the current input as a command to Claude via WebSocket. */
   const sendCommand = () => {
-    if (!input.trim() && pendingImages.length === 0) return
+    if (!activeTerminalTab) return
+    const tabImages = activeTerminalTab.pendingImages
+    if (!input.trim() && tabImages.length === 0) return
 
     const command = input.trim()
-    const images = pendingImages.map(img => ({
+    const images = tabImages.map(img => ({
       data: img.data,
       name: img.name
     }))
@@ -1585,10 +1718,10 @@ function App() {
     const displayContent = images.length > 0
       ? `${command}${command ? '\n' : ''}[${images.length} image${images.length > 1 ? 's' : ''} attached]`
       : command
-    addMessage('input', displayContent)
+    addTabMessage(activeTerminalTab.id, 'input', displayContent)
 
     setInput('')
-    setPendingImages([])
+    updateTab(activeTerminalTab.id, { pendingImages: [] })
     if (inputRef.current) {
       inputRef.current.style.height = 'auto'
     }
@@ -1597,17 +1730,16 @@ function App() {
       const msg: Record<string, unknown> = {
         type: 'command',
         content: command,
+        tabId: activeTerminalTab.id,
+        workingDirectory: activeTerminalTab.workingDirectory,
+        projectId: activeTerminalTab.projectId,
       }
       if (images.length > 0) {
         msg.images = images
       }
-      if (activeProject) {
-        msg.workingDirectory = activeProject.directory
-        msg.projectId = activeProject.id
-      }
       wsRef.current.send(JSON.stringify(msg))
     } else {
-      addMessage('error', 'Not connected to server. Retrying connection...')
+      addTabMessage(activeTerminalTab.id, 'error', 'Not connected to server. Retrying connection...')
       connect()
     }
   }
@@ -1617,15 +1749,16 @@ function App() {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       sendCommand()
-    } else if (e.key === 'c' && e.ctrlKey) {
+    } else if (e.key === 'c' && e.ctrlKey && activeTerminalTab) {
       e.preventDefault()
-      wsRef.current?.send(JSON.stringify({ type: 'abort' }))
-      addMessage('status', 'Aborting...')
+      wsRef.current?.send(JSON.stringify({ type: 'abort', tabId: activeTerminalTab.id }))
+      addTabMessage(activeTerminalTab.id, 'status', 'Aborting...')
     }
   }
 
   /** Handles paste events to detect and capture images from clipboard. */
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    if (!activeTerminalTab) return
     const items = e.clipboardData?.items
     if (!items) return
 
@@ -1636,6 +1769,7 @@ function App() {
     if (imageItems.length === 0) return
 
     e.preventDefault() // Prevent default paste of image data
+    const tabId = activeTerminalTab.id
 
     for (const item of imageItems) {
       const file = item.getAsFile()
@@ -1644,24 +1778,27 @@ function App() {
       const reader = new FileReader()
       reader.onload = () => {
         const dataUrl = reader.result as string
-        // Extract base64 data (remove "data:image/png;base64," prefix)
         const base64 = dataUrl.split(',')[1]
 
-        setPendingImages(prev => [...prev, {
-          id: generateId(),
-          data: base64,
-          name: `paste-${Date.now()}-${prev.length}.png`,
-          preview: dataUrl
-        }])
+        setTerminalTabs(prev => prev.map(tab =>
+          tab.id === tabId ? { ...tab, pendingImages: [...tab.pendingImages, {
+            id: generateId(),
+            data: base64,
+            name: `paste-${Date.now()}-${tab.pendingImages.length}.png`,
+            preview: dataUrl
+          }] } : tab
+        ))
       }
       reader.readAsDataURL(file)
     }
-  }, [])
+  }, [activeTerminalTab])
 
   /** Handles file selection from the image picker. */
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!activeTerminalTab) return
     const files = e.target.files
     if (!files) return
+    const tabId = activeTerminalTab.id
 
     for (const file of Array.from(files)) {
       if (!file.type.startsWith('image/')) continue
@@ -1671,52 +1808,66 @@ function App() {
         const dataUrl = reader.result as string
         const base64 = dataUrl.split(',')[1]
 
-        setPendingImages(prev => [...prev, {
-          id: generateId(),
-          data: base64,
-          name: file.name || `image-${Date.now()}.png`,
-          preview: dataUrl
-        }])
+        setTerminalTabs(prev => prev.map(tab =>
+          tab.id === tabId ? { ...tab, pendingImages: [...tab.pendingImages, {
+            id: generateId(),
+            data: base64,
+            name: file.name || `image-${Date.now()}.png`,
+            preview: dataUrl
+          }] } : tab
+        ))
       }
       reader.readAsDataURL(file)
     }
 
     // Reset the input so the same file can be selected again
     e.target.value = ''
-  }, [])
+  }, [activeTerminalTab])
 
-  /** Resets the current session and clears message history. */
+  /** Resets the current tab's session and clears message history. */
   const handleReset = () => {
-    wsRef.current?.send(JSON.stringify({ type: 'reset' }))
-    setSessionId(null)
-    sessionIdRef.current = null
-    lastMessageIdRef.current = 0
-    localStorage.removeItem('currentSessionId')
-    setMessages([])
+    if (!activeTerminalTab) return
+    const tabId = activeTerminalTab.id
+    wsRef.current?.send(JSON.stringify({ type: 'reset', tabId }))
+    updateTab(tabId, {
+      sessionId: null,
+      lastMessageId: 0,
+      messages: [],
+      currentTool: null,
+    })
+    setTerminalTabs(prev => {
+      persistTabs(prev.map(t => t.id === tabId ? { ...t, sessionId: null } : t), activeTerminalTabId)
+      return prev
+    })
   }
 
-  /** Starts a new chat session from the sidebar. */
+  /** Starts a new chat session on the active terminal tab. */
   const handleNewChat = () => {
     handleReset()
     setSidebarOpen(false)
-    setActiveSubTab('terminal')
+    if (activeTerminalTab) {
+      setActiveSubTab('terminal')
+    }
   }
 
-  /** Resumes a previous session and loads its conversation history. */
+  /** Resumes a previous session and loads its conversation history on the active terminal tab. */
   const handleSelectSession = async (session: Session) => {
-    // Reset current session and set new session ID
-    const resumeMsg: Record<string, string> = { type: 'resume', sessionId: session.id }
-    if (activeProject) {
-      resumeMsg.workingDirectory = activeProject.directory
-    }
-    wsRef.current?.send(JSON.stringify(resumeMsg))
-    setSessionId(session.id)
-    sessionIdRef.current = session.id
-    lastMessageIdRef.current = 0  // Reset message ID for new session
-    localStorage.setItem('currentSessionId', session.id)
-    setMessages([])
+    if (!activeTerminalTab) return
+    const tabId = activeTerminalTab.id
+
+    wsRef.current?.send(JSON.stringify({
+      type: 'resume',
+      sessionId: session.id,
+      workingDirectory: activeTerminalTab.workingDirectory,
+      tabId,
+    }))
+    updateTab(tabId, {
+      sessionId: session.id,
+      lastMessageId: 0,
+      messages: [],
+    })
     setSidebarOpen(false)
-    setActiveSubTab('terminal')  // Switch to terminal tab when selecting a session
+    setActiveSubTab('terminal')
 
     // Fetch and restore conversation history
     try {
@@ -1728,17 +1879,26 @@ function App() {
         content: msg.content,
         timestamp: new Date(msg.timestamp),
       }))
-      setMessages(restoredMessages)
-      addMessage('status', `Loaded ${history.length} messages from conversation`)
+      updateTab(tabId, { messages: restoredMessages })
+      addTabMessage(tabId, 'status', `Loaded ${history.length} messages from conversation`)
     } catch (err) {
       console.error('Failed to fetch session history:', err)
-      addMessage('status', `Resumed conversation: ${session.name}`)
+      addTabMessage(tabId, 'status', `Resumed conversation: ${session.name}`)
     }
+    // Persist the new session ID
+    setTerminalTabs(prev => {
+      const updated = prev.map(t => t.id === tabId ? { ...t, sessionId: session.id } : t)
+      persistTabs(updated, activeTerminalTabId)
+      return updated
+    })
   }
 
   /** Returns the status indicator color based on connection state. */
   const getStatusColor = () => {
-    switch (status) {
+    const tabStatus = activeTerminalTab?.status
+    if (!wsConnected) return '#f87171' // disconnected
+    if (!tabStatus) return wsConnected ? '#4ade80' : '#f87171'
+    switch (tabStatus) {
       case 'connected': return '#4ade80'
       case 'connecting': return '#facc15'
       case 'processing': return '#60a5fa'
@@ -1751,17 +1911,12 @@ function App() {
   const handleRestart = async () => {
     try {
       const apiUrl = `http://${window.location.hostname}:4001/restart`
-      addMessage('status', 'Requesting server restart...')
       const response = await fetch(apiUrl, { method: 'POST' })
       if (response.ok) {
-        setStatus('restarting')
+        setTerminalTabs(prev => prev.map(tab => ({ ...tab, status: 'restarting' as ConnectionStatus })))
         isRestartingRef.current = true
-        // Countdown and refresh
         setRestartCountdown(3)
-        // Save current session ID to restore after reload
-        if (sessionId) {
-          localStorage.setItem('restartSessionId', sessionId)
-        }
+        // Tabs are already persisted in localStorage for rehydration after reload
         const countdownInterval = setInterval(() => {
           setRestartCountdown(prev => {
             if (prev === null || prev <= 1) {
@@ -1772,12 +1927,9 @@ function App() {
             return prev - 1
           })
         }, 1000)
-      } else {
-        addMessage('error', 'Failed to restart server')
       }
     } catch (error) {
       console.error('Failed to restart server:', error)
-      addMessage('error', 'Failed to restart server')
     }
   }
 
@@ -1820,9 +1972,13 @@ function App() {
   /** Switches between sections (Terminal, Hardware, Diagnostics). */
   const handleSectionChange = useCallback((section: Section) => {
     setActiveSection(section)
-    setActiveSubTab(SECTION_TABS[section][0])
+    if (section === 'terminal' && terminalTabs.length > 0 && activeTerminalTabId) {
+      setActiveSubTab('terminal')
+    } else {
+      setActiveSubTab(SECTION_TABS[section][0])
+    }
     setSidebarOpen(false)
-  }, [])
+  }, [terminalTabs.length, activeTerminalTabId])
 
   /** Switches between sub-tabs within the current section. */
   const handleSubTabChange = useCallback((tab: SubTab) => {
@@ -2134,13 +2290,13 @@ function App() {
                 const apiUrl = `http://${window.location.hostname}:4001/grafana/restart`
                 const response = await fetch(apiUrl, { method: 'POST' })
                 if (response.ok) {
-                  addMessage('status', 'Grafana container restarted')
+                  console.log('Grafana container restarted')
                 } else {
                   const data = await response.json()
-                  addMessage('error', `Failed to restart Grafana: ${data.error}`)
+                  console.error(`Failed to restart Grafana: ${data.error}`)
                 }
               } catch (error) {
-                addMessage('error', 'Failed to restart Grafana')
+                console.error('Failed to restart Grafana')
               }
               setSidebarOpen(false)
             }}
@@ -2153,13 +2309,11 @@ function App() {
             onClick={() => { handleRestart(); setSidebarOpen(false) }}
             className="restart-button"
             title="Restart server"
-            disabled={status === 'restarting'}
+            disabled={restartCountdown !== null}
           >
             {restartCountdown !== null
               ? `Refreshing in ${restartCountdown}...`
-              : status === 'restarting'
-                ? 'Restarting...'
-                : 'Restart Server'}
+              : 'Restart Server'}
           </button>
         </div>
       </div>
@@ -2177,13 +2331,14 @@ function App() {
               <span></span>
             </button>
             <span className="terminal-dot" style={{ backgroundColor: getStatusColor() }} />
-            {activeSubTab === 'terminal' ? (activeProject ? `${activeProject.name} — Terminal` : 'Claude Code Terminal')
+            {activeSubTab === 'terminal' && activeTerminalTab ? `${activeTerminalTab.projectName} — Terminal`
+              : activeSubTab === 'terminal' ? 'Terminal — No project open'
               : SECTION_TABS[activeSection].length === 1
                 ? SECTION_LABELS[activeSection]
                 : `${SECTION_LABELS[activeSection]} — ${SUB_TAB_LABELS[activeSubTab]}`}
           </div>
           <div className="terminal-controls">
-            {activeSubTab === 'terminal' && sessionId && <span className="session-id">{sessionId.slice(0, 8)}...</span>}
+            {activeSubTab === 'terminal' && activeTerminalTab?.sessionId && <span className="session-id">{activeTerminalTab.sessionId.slice(0, 8)}...</span>}
             {activeSubTab === 'logs' && (
               <>
                 <select
@@ -2206,61 +2361,114 @@ function App() {
 
         {/* Tab bar — sub-tabs for active section */}
         <div className="tab-bar">
-          {SECTION_TABS[activeSection].map(tab => (
-            <button
-              key={tab}
-              className={`tab ${activeSubTab === tab ? 'active' : ''}`}
-              onClick={() => handleSubTabChange(tab)}
-            >
-              {SUB_TAB_LABELS[tab]}
-              {tab === 'conversations' && sessions.length > 0 && <span className="tab-badge">{sessions.length}</span>}
-              {tab === 'webcams' && activeWebcams.size > 0 && <span className="tab-badge">{activeWebcams.size}</span>}
-              {tab === 'logs' && filteredLogMessages.length > 0 && <span className="tab-badge">{filteredLogMessages.length}</span>}
-              {tab === 'projects' && projects.length > 0 && <span className="tab-badge">{projects.length}</span>}
-            </button>
-          ))}
+          {activeSection === 'terminal' ? (
+            <>
+              {/* Dynamic terminal tabs */}
+              {terminalTabs.map(tab => (
+                <button
+                  key={tab.id}
+                  className={`tab ${activeTerminalTabId === tab.id && activeSubTab === 'terminal' ? 'active' : ''} ${tab.status === 'processing' ? 'tab-processing' : ''}`}
+                  onClick={() => { setActiveTerminalTabId(tab.id); setActiveSubTab('terminal') }}
+                >
+                  {tab.projectName}
+                  {tab.status === 'processing' && <span className="tab-processing-dot" />}
+                  <span
+                    className="tab-close-button"
+                    onClick={(e) => { e.stopPropagation(); closeTerminalTab(tab.id) }}
+                  >
+                    &times;
+                  </span>
+                </button>
+              ))}
+
+              {/* Separator between terminal tabs and management tabs */}
+              {terminalTabs.length > 0 && <span className="tab-separator" />}
+
+              {/* Static management tabs */}
+              <button
+                className={`tab ${activeSubTab === 'projects' ? 'active' : ''}`}
+                onClick={() => handleSubTabChange('projects')}
+              >
+                Projects
+                {projects.length > 0 && <span className="tab-badge">{projects.length}</span>}
+              </button>
+              <button
+                className={`tab ${activeSubTab === 'conversations' ? 'active' : ''}`}
+                onClick={() => handleSubTabChange('conversations')}
+              >
+                Conversations
+                {sessions.length > 0 && <span className="tab-badge">{sessions.length}</span>}
+              </button>
+            </>
+          ) : (
+            SECTION_TABS[activeSection].map(tab => (
+              <button
+                key={tab}
+                className={`tab ${activeSubTab === tab ? 'active' : ''}`}
+                onClick={() => handleSubTabChange(tab)}
+              >
+                {SUB_TAB_LABELS[tab]}
+                {tab === 'webcams' && activeWebcams.size > 0 && <span className="tab-badge">{activeWebcams.size}</span>}
+                {tab === 'logs' && filteredLogMessages.length > 0 && <span className="tab-badge">{filteredLogMessages.length}</span>}
+              </button>
+            ))
+          )}
         </div>
 
-        {/* Terminal output - always mounted, hidden when inactive */}
-        <div
-          className={`terminal-output ${activeSubTab !== 'terminal' ? 'tab-hidden' : ''}`}
-          ref={outputRef}
-          onScroll={handleTerminalScroll}
-        >
-          {messages.length === 0 && (
-            <div className="welcome-message">
-              Welcome to Claude Code Terminal.
-              <br />
-              Type a message to start a conversation with Claude.
-            </div>
-          )}
-          {messages.map((msg, index) => {
-            const isReady = index === readyMessageIndex && status === 'connected'
-            return (
-              <div key={msg.id} className={`message message-${msg.type}${isReady ? ' message-ready' : ''}`}>
-                {msg.type === 'input' && <span className="prompt">&gt; </span>}
-                {msg.type === 'error' && <span className="error-prefix">[ERROR] </span>}
-                {msg.type === 'status' && <span className="status-prefix">[STATUS] </span>}
-                {msg.type === 'output' ? (
-                  <div className="message-content markdown-content">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                      {msg.content}
-                    </ReactMarkdown>
-                  </div>
-                ) : (
-                  <span className="message-content">{msg.content}</span>
-                )}
+        {/* Terminal output - one div per tab, hidden when not active */}
+        {terminalTabs.map(tab => (
+          <div
+            key={tab.id}
+            className={`terminal-output ${(activeTerminalTabId !== tab.id || activeSubTab !== 'terminal') ? 'tab-hidden' : ''}`}
+            ref={activeTerminalTabId === tab.id ? outputRef : undefined}
+            onScroll={activeTerminalTabId === tab.id ? handleTerminalScroll : undefined}
+          >
+            {tab.messages.length === 0 && (
+              <div className="welcome-message">
+                Terminal for {tab.projectName}.
+                <br />
+                Type a message to start a conversation with Claude.
               </div>
-            )
-          })}
-          {status === 'processing' && (
-            <div className="message message-tool">
-              <span className="tool-indicator">
-                {currentTool || 'Processing...'}
-              </span>
+            )}
+            {tab.messages.map((msg, index) => {
+              const isReady = activeTerminalTabId === tab.id && index === readyMessageIndex && tab.status === 'connected'
+              return (
+                <div key={msg.id} className={`message message-${msg.type}${isReady ? ' message-ready' : ''}`}>
+                  {msg.type === 'input' && <span className="prompt">&gt; </span>}
+                  {msg.type === 'error' && <span className="error-prefix">[ERROR] </span>}
+                  {msg.type === 'status' && <span className="status-prefix">[STATUS] </span>}
+                  {msg.type === 'output' ? (
+                    <div className="message-content markdown-content">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                        {msg.content}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <span className="message-content">{msg.content}</span>
+                  )}
+                </div>
+              )
+            })}
+            {tab.status === 'processing' && (
+              <div className="message message-tool">
+                <span className="tool-indicator">
+                  {tab.currentTool || 'Processing...'}
+                </span>
+              </div>
+            )}
+          </div>
+        ))}
+
+        {/* Show welcome when no tabs are open and terminal sub-tab is selected */}
+        {terminalTabs.length === 0 && activeSubTab === 'terminal' && (
+          <div className="terminal-output">
+            <div className="welcome-message">
+              No projects open.
+              <br />
+              Open a project from the Projects tab to start a terminal.
             </div>
-          )}
-        </div>
+          </div>
+        )}
 
         {/* Scroll to bottom button */}
         {activeSubTab === 'terminal' && showScrollButton && (
@@ -2447,62 +2655,65 @@ function App() {
 
           {projects.length > 0 && (
             <div className="projects-list">
-              {projects.map(project => (
-                <div
-                  key={project.id}
-                  className={`project-card ${activeProject?.id === project.id ? 'active' : ''}`}
-                >
-                  <div className="project-card-header">
-                    <div className="project-card-name">{project.name}</div>
-                    <div className="project-card-actions">
-                      {activeProject?.id === project.id ? (
+              {projects.map(project => {
+                const isOpen = terminalTabs.some(t => t.projectId === project.id)
+                return (
+                  <div
+                    key={project.id}
+                    className={`project-card ${isOpen ? 'active' : ''}`}
+                  >
+                    <div className="project-card-header">
+                      <div className="project-card-name">{project.name}</div>
+                      <div className="project-card-actions">
+                        {isOpen ? (
+                          <button
+                            className="project-deactivate-button"
+                            onClick={() => closeTerminalTab(`tab-${project.id}`)}
+                          >
+                            Close
+                          </button>
+                        ) : (
+                          <button
+                            className="project-switch-button"
+                            onClick={() => handleActivateProject(project)}
+                          >
+                            Open
+                          </button>
+                        )}
                         <button
-                          className="project-deactivate-button"
-                          onClick={handleDeactivateProject}
+                          className="project-remove-button"
+                          onClick={() => handleRemoveProject(project.id)}
+                          title="Remove project"
                         >
-                          Deactivate
+                          &times;
                         </button>
-                      ) : (
-                        <button
-                          className="project-switch-button"
-                          onClick={() => handleSwitchProject(project)}
-                        >
-                          Switch
-                        </button>
-                      )}
-                      <button
-                        className="project-remove-button"
-                        onClick={() => handleRemoveProject(project.id)}
-                        title="Remove project"
+                      </div>
+                    </div>
+                    <div className="project-card-directory">{project.directory}</div>
+                    {project.githubUrl && (
+                      <a
+                        className="project-card-github"
+                        href={project.githubUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
                       >
-                        &times;
-                      </button>
-                    </div>
+                        {project.githubUrl.replace('https://github.com/', '')}
+                      </a>
+                    )}
+                    {project.lastConversationId && (
+                      <div className="project-card-conversation">
+                        Last conversation: {project.lastConversationId.slice(0, 8)}...
+                      </div>
+                    )}
                   </div>
-                  <div className="project-card-directory">{project.directory}</div>
-                  {project.githubUrl && (
-                    <a
-                      className="project-card-github"
-                      href={project.githubUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      {project.githubUrl.replace('https://github.com/', '')}
-                    </a>
-                  )}
-                  {project.lastConversationId && (
-                    <div className="project-card-conversation">
-                      Last conversation: {project.lastConversationId.slice(0, 8)}...
-                    </div>
-                  )}
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
 
-          {activeProject && (
+          {activeTerminalTab && (
             <div className="project-conversations">
-              <h3>Conversations for {activeProject.name}</h3>
+              <h3>Conversations for {activeTerminalTab.projectName}</h3>
               {loadingProjectConversations ? (
                 <div className="welcome-message">Loading conversations...</div>
               ) : projectConversations.length === 0 ? (
@@ -2512,7 +2723,7 @@ function App() {
                   {projectConversations.map(conv => (
                     <button
                       key={conv.id}
-                      className={`session-item ${sessionId === conv.id ? 'active' : ''}`}
+                      className={`session-item ${activeTerminalTab.sessionId === conv.id ? 'active' : ''}`}
                       onClick={() => handleSelectSession(conv)}
                     >
                       <div className="session-name">{conv.name}</div>
@@ -2527,18 +2738,27 @@ function App() {
 
         {/* Conversations - always mounted, hidden when inactive */}
         <div className={`conversations-container ${activeSubTab !== 'conversations' ? 'tab-hidden' : ''}`}>
-          {activeProject && (
+          {activeTerminalTab && (
             <div className="conversations-project-badge">
-              Project: <strong>{activeProject.name}</strong>
+              Project: <strong>{activeTerminalTab.projectName}</strong>
             </div>
           )}
           <div className="conversations-header">
             <h3>Conversations</h3>
-            <button className="new-chat-button" onClick={handleNewChat}>
+            <button
+              className="new-chat-button"
+              onClick={handleNewChat}
+              disabled={!activeTerminalTab}
+              title={!activeTerminalTab ? 'Open a project first' : 'Start a new conversation on the active terminal tab'}
+            >
               + New Conversation
             </button>
           </div>
-          {loadingSessions && sessions.length === 0 ? (
+          {!activeTerminalTab ? (
+            <div className="welcome-message">
+              Open a project first to manage conversations.
+            </div>
+          ) : loadingSessions && sessions.length === 0 ? (
             <div className="welcome-message">Loading conversations...</div>
           ) : sessions.length === 0 ? (
             <div className="welcome-message">
@@ -2551,7 +2771,7 @@ function App() {
               {sessions.map(session => (
                 <button
                   key={session.id}
-                  className={`session-item ${sessionId === session.id ? 'active' : ''}`}
+                  className={`session-item ${activeTerminalTab.sessionId === session.id ? 'active' : ''}`}
                   onClick={() => handleSelectSession(session)}
                 >
                   <div className="session-name">{session.name}</div>
@@ -3183,18 +3403,23 @@ function App() {
           </div>
         )}
 
-        {/* Input container - only show on terminal tab */}
-        {activeSubTab === 'terminal' && (
+        {/* Input container - only show on terminal tab when a tab is active */}
+        {activeSubTab === 'terminal' && activeTerminalTab && (
           <>
             {/* Image preview area */}
-            {pendingImages.length > 0 && (
+            {activeTerminalTab.pendingImages.length > 0 && (
               <div className="image-preview-container">
-                {pendingImages.map(img => (
+                {activeTerminalTab.pendingImages.map(img => (
                   <div key={img.id} className="image-preview">
                     <img src={img.preview} alt="Pending upload" />
                     <button
                       className="image-remove-button"
-                      onClick={() => setPendingImages(prev => prev.filter(i => i.id !== img.id))}
+                      onClick={() => {
+                        const tabId = activeTerminalTab.id
+                        setTerminalTabs(prev => prev.map(tab =>
+                          tab.id === tabId ? { ...tab, pendingImages: tab.pendingImages.filter(i => i.id !== img.id) } : tab
+                        ))
+                      }}
                       aria-label="Remove image"
                     >
                       &times;
@@ -3233,12 +3458,12 @@ function App() {
                 }}
                 onKeyDown={handleKeyDown}
                 onPaste={handlePaste}
-                placeholder={status === 'connected' ? 'Type a message or paste an image...' : `Status: ${status}...`}
+                placeholder={activeTerminalTab.status === 'connected' ? 'Type a message or paste an image...' : `Status: ${activeTerminalTab.status}...`}
               />
               <button
                 className="send-button"
                 onClick={sendCommand}
-                disabled={(!input.trim() && pendingImages.length === 0) || status === 'processing'}
+                disabled={(!input.trim() && activeTerminalTab.pendingImages.length === 0) || activeTerminalTab.status === 'processing'}
                 aria-label="Send message"
               >
                 Send

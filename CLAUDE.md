@@ -52,15 +52,16 @@ Browser
 
 | Message | Direction | Purpose |
 |---------|-----------|---------|
-| `{type: 'command', content: string}` | client→server | Send prompt to Claude |
-| `{type: 'abort'}` | client→server | Cancel current operation |
-| `{type: 'reset'}` | client→server | Clear session |
-| `{type: 'resume', sessionId: string}` | client→server | Resume existing session |
-| `{type: 'output', content: string}` | server→client | Claude response text |
-| `{type: 'error', content: string}` | server→client | Error message |
-| `{type: 'status', content: string}` | server→client | Status: connected/processing/restarting |
-| `{type: 'session', content: string}` | server→client | New session ID |
-| `{type: 'log', level, content, timestamp}` | server→client | Server log broadcast |
+| `{type: 'command', tabId, content: string}` | client→server | Send prompt to Claude |
+| `{type: 'abort', tabId}` | client→server | Cancel current operation |
+| `{type: 'reset', tabId}` | client→server | Clear session |
+| `{type: 'resume', tabId, sessionId: string}` | client→server | Resume existing session |
+| `{type: 'tab-close', tabId}` | client→server | Close tab and clean up its manager |
+| `{type: 'output', tabId, content: string}` | server→client | Claude response text |
+| `{type: 'error', tabId, content: string}` | server→client | Error message |
+| `{type: 'status', tabId, content: string}` | server→client | Status: connected/processing/restarting |
+| `{type: 'session', tabId, content: string}` | server→client | New session ID |
+| `{type: 'log', level, content, timestamp}` | server→client | Server log broadcast (global, no tabId) |
 
 ### Webcam Server (port 4002)
 
@@ -97,10 +98,21 @@ Uses `prom-client` for server metrics and `web-vitals` for client metrics, with 
 
 To modify dashboards, edit the JSON in `grafana/dashboards/` and restart Grafana (`docker compose restart grafana`).
 
+## Multi-Tab Terminal
+
+- Activating a project opens a new terminal tab with its own Claude session
+- Multiple terminal tabs can run different Claude instances in parallel
+- Each tab has independent messages, session, status, and working directory
+- Server multiplexes via `tabId` field on all per-tab WebSocket messages (messages without `tabId` default to `'default'`)
+- Server tracks per-tab managers (`tabManagers`), sessions (`tabSessions`), and connection→tab mappings (`connectionTabs`)
+- Tab bar: dynamic terminal tabs on the left, Projects/Conversations on the right, separated by a visual divider
+- Closing a tab sends `tab-close` to the server for cleanup
+
 ## Session Management
 
 - Sessions stored as JSONL in `~/.claude/projects/<project>/<session-id>.jsonl`
-- Current session ID persisted to `localStorage.currentSessionId`
+- Open terminal tabs persisted to `localStorage.terminalTabs` (array of `{id, projectId, projectName, workingDirectory, sessionId}`)
+- Active tab persisted to `localStorage.activeTerminalTabId`
 - Message buffering supports reconnection (last 1000 messages per session)
 
 ## REST Endpoints

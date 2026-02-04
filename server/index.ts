@@ -47,8 +47,14 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
-/** Maps WebSocket connections to their ClaudeCodeManager instances. */
-const managers = new Map<WebSocket, ClaudeCodeManager>();
+/** Maps tabId to their ClaudeCodeManager instances (supports multiple tabs per connection). */
+const tabManagers = new Map<string, ClaudeCodeManager>();
+
+/** Maps tabId to their current session ID. */
+const tabSessions = new Map<string, string>();
+
+/** Maps WebSocket connections to their set of active tab IDs. */
+const connectionTabs = new Map<WebSocket, Set<string>>();
 
 /** Maps session IDs to their ClaudeCodeManager instances for reconnection support. */
 const sessionManagers = new Map<string, ClaudeCodeManager>();
@@ -210,7 +216,7 @@ app.post('/grafana/restart', async (_req, res) => {
 
 // Health check endpoint
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', connections: managers.size });
+  res.json({ status: 'ok', connections: connectionTabs.size, tabs: tabManagers.size });
 });
 
 // Heartbeat endpoint for restart watcher monitoring
@@ -953,16 +959,15 @@ app.get('/sessions/:sessionId/messages', (req, res) => {
   });
 });
 
-/** Maps WebSocket connections to their current session ID for message buffering. */
-const connectionSessions = new Map<WebSocket, string>();
-
 /**
  * Sets up event listeners on a manager to forward output to a WebSocket.
+ * Includes tabId in all outgoing messages for client-side routing.
  * Returns a cleanup function to remove the listeners.
  */
 function attachManagerToWebSocket(
   manager: ClaudeCodeManager,
   ws: WebSocket,
+  tabId: string,
   getSessionId: () => string | undefined
 ): () => void {
   const outputHandler = (data: { type: string; content: string }) => {
@@ -970,20 +975,20 @@ function attachManagerToWebSocket(
     if (sessionId) {
       const buffered = bufferMessage(sessionId, data.type, data.content);
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ ...buffered }));
+        ws.send(JSON.stringify({ ...buffered, tabId }));
       }
     } else if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: data.type, content: data.content }));
+      ws.send(JSON.stringify({ type: data.type, content: data.content, tabId }));
     }
   };
 
   const sessionIdHandler = (sessionId: string) => {
-    connectionSessions.set(ws, sessionId);
+    tabSessions.set(tabId, sessionId);
     // Store manager by session ID for reconnection
     sessionManagers.set(sessionId, manager);
     claudeSessionsActive.inc();
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'session', content: sessionId }));
+      ws.send(JSON.stringify({ type: 'session', content: sessionId, tabId }));
     }
   };
 
@@ -992,10 +997,10 @@ function attachManagerToWebSocket(
     if (sessionId) {
       const buffered = bufferMessage(sessionId, 'error', error.message);
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ ...buffered }));
+        ws.send(JSON.stringify({ ...buffered, tabId }));
       }
     } else if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'error', content: error.message }));
+      ws.send(JSON.stringify({ type: 'error', content: error.message, tabId }));
     }
   };
 
@@ -1018,16 +1023,32 @@ wss.on('connection', (ws) => {
   // Add to all clients set for log broadcasting
   allClients.add(ws);
 
-  // Create a new manager for this connection (may be replaced on resume)
-  let manager = new ClaudeCodeManager(WORKING_DIR);
-  managers.set(ws, manager);
+  // Track per-tab managers and cleanup functions for this connection
+  const localTabManagers = new Map<string, ClaudeCodeManager>();
+  const localTabCleanups = new Map<string, () => void>();
+  connectionTabs.set(ws, new Set());
 
-  // Track cleanup function for manager event listeners
-  let cleanupListeners = attachManagerToWebSocket(
-    manager,
-    ws,
-    () => connectionSessions.get(ws)
-  );
+  /** Gets or creates a manager for a given tabId and working directory. */
+  function getOrCreateManager(tabId: string, workDir: string): ClaudeCodeManager {
+    let manager = localTabManagers.get(tabId);
+    if (manager && manager.getWorkingDirectory() === workDir) {
+      return manager;
+    }
+    // Clean up old manager listeners if switching directories
+    if (manager) {
+      localTabCleanups.get(tabId)?.();
+    }
+    manager = new ClaudeCodeManager(workDir);
+    localTabManagers.set(tabId, manager);
+    tabManagers.set(tabId, manager);
+    connectionTabs.get(ws)!.add(tabId);
+    const cleanup = attachManagerToWebSocket(
+      manager, ws, tabId,
+      () => tabSessions.get(tabId)
+    );
+    localTabCleanups.set(tabId, cleanup);
+    return manager;
+  }
 
   // Send initial status
   ws.send(JSON.stringify({ type: 'status', content: 'connected' }));
@@ -1037,27 +1058,16 @@ wss.on('connection', (ws) => {
     console.log('[Server] Received message:', data.toString().substring(0, 200));
     try {
       const message = JSON.parse(data.toString());
-      console.log('[Server] Parsed message type:', message.type);
+      const tabId: string = message.tabId || 'default';
+      console.log('[Server] Parsed message type:', message.type, 'tabId:', tabId);
       wsMessagesTotal.inc({ server: 'main', direction: 'in', type: message.type });
 
       switch (message.type) {
         case 'command':
           if (message.content && typeof message.content === 'string') {
-            // If a workingDirectory is specified (project context), ensure the manager uses it
-            if (message.workingDirectory && typeof message.workingDirectory === 'string') {
-              const currentDir = manager.getWorkingDirectory();
-              if (currentDir !== message.workingDirectory) {
-                // Need a new manager for the different directory
-                cleanupListeners();
-                manager = new ClaudeCodeManager(message.workingDirectory);
-                managers.set(ws, manager);
-                cleanupListeners = attachManagerToWebSocket(
-                  manager,
-                  ws,
-                  () => connectionSessions.get(ws)
-                );
-              }
-            }
+            const workDir = (message.workingDirectory && typeof message.workingDirectory === 'string')
+              ? message.workingDirectory : WORKING_DIR;
+            const manager = getOrCreateManager(tabId, workDir);
 
             // Parse images for direct pass-through to Claude via stream-json
             const images = Array.isArray(message.images) && message.images.length > 0
@@ -1073,13 +1083,12 @@ wss.on('connection', (ws) => {
             // Track project ID for auto-updating lastConversationId
             if (message.projectId && typeof message.projectId === 'string') {
               const projectId = message.projectId;
-              // Listen once for sessionId to update project's lastConversationId
               manager.once('sessionId', (sessionId: string) => {
                 updateProjectConversation(projectId, sessionId).catch(() => {});
               });
             }
 
-            console.log('[Server] Sending command to manager:', message.content.substring(0, 100), 'with', images?.length || 0, 'images');
+            console.log('[Server] Sending command to manager (tab:', tabId, '):', message.content.substring(0, 100), 'with', images?.length || 0, 'images');
             const endTimer = claudeCommandDuration.startTimer();
             try {
               await manager.sendCommand(message.content, images);
@@ -1090,22 +1099,25 @@ wss.on('connection', (ws) => {
               claudeCommandsTotal.inc({ status: 'error' });
               throw cmdError;
             }
-            console.log('[Server] Command completed');
+            console.log('[Server] Command completed (tab:', tabId, ')');
           }
           break;
 
-        case 'abort':
-          manager.abort();
+        case 'abort': {
+          const manager = localTabManagers.get(tabId);
+          if (manager) manager.abort();
           break;
+        }
 
         case 'reset': {
-          const oldSessionId = connectionSessions.get(ws);
+          const oldSessionId = tabSessions.get(tabId);
           if (oldSessionId) {
             sessionManagers.delete(oldSessionId);
           }
-          connectionSessions.delete(ws);
-          manager.reset();
-          ws.send(JSON.stringify({ type: 'status', content: 'reset' }));
+          tabSessions.delete(tabId);
+          const manager = localTabManagers.get(tabId);
+          if (manager) manager.reset();
+          ws.send(JSON.stringify({ type: 'status', content: 'reset', tabId }));
           break;
         }
 
@@ -1115,46 +1127,52 @@ wss.on('connection', (ws) => {
 
             if (existingManager && existingManager.isRunning()) {
               // Reattach to existing running manager
-              console.log(`[Server] Reattaching to running manager for session ${message.sessionId}`);
-              cleanupListeners(); // Remove listeners from old manager
-              manager = existingManager;
-              managers.set(ws, manager);
-              cleanupListeners = attachManagerToWebSocket(
-                manager,
-                ws,
-                () => connectionSessions.get(ws)
+              console.log(`[Server] Reattaching to running manager for session ${message.sessionId} (tab: ${tabId})`);
+              localTabCleanups.get(tabId)?.();
+              localTabManagers.set(tabId, existingManager);
+              tabManagers.set(tabId, existingManager);
+              connectionTabs.get(ws)!.add(tabId);
+              const cleanup = attachManagerToWebSocket(
+                existingManager, ws, tabId,
+                () => tabSessions.get(tabId)
               );
+              localTabCleanups.set(tabId, cleanup);
             } else {
-              // If a workingDirectory is specified, ensure the manager uses it
-              if (message.workingDirectory && typeof message.workingDirectory === 'string') {
-                const currentDir = manager.getWorkingDirectory();
-                if (currentDir !== message.workingDirectory) {
-                  cleanupListeners();
-                  manager = new ClaudeCodeManager(message.workingDirectory);
-                  managers.set(ws, manager);
-                  cleanupListeners = attachManagerToWebSocket(
-                    manager,
-                    ws,
-                    () => connectionSessions.get(ws)
-                  );
-                }
-              }
-              // Set session ID on current manager
+              const workDir = (message.workingDirectory && typeof message.workingDirectory === 'string')
+                ? message.workingDirectory : WORKING_DIR;
+              const manager = getOrCreateManager(tabId, workDir);
               manager.setSessionId(message.sessionId);
               sessionManagers.set(message.sessionId, manager);
             }
 
-            connectionSessions.set(ws, message.sessionId);
-            ws.send(JSON.stringify({ type: 'session', content: message.sessionId }));
+            tabSessions.set(tabId, message.sessionId);
+            ws.send(JSON.stringify({ type: 'session', content: message.sessionId, tabId }));
             ws.send(JSON.stringify({
               type: 'status',
-              content: existingManager?.isRunning() ? 'processing' : 'resumed'
+              content: existingManager?.isRunning() ? 'processing' : 'resumed',
+              tabId
             }));
           }
           break;
 
+        case 'tab-close': {
+          // Clean up manager for this tab
+          localTabCleanups.get(tabId)?.();
+          const manager = localTabManagers.get(tabId);
+          if (manager) manager.abort();
+          const sid = tabSessions.get(tabId);
+          if (sid) sessionManagers.delete(sid);
+          tabSessions.delete(tabId);
+          localTabManagers.delete(tabId);
+          tabManagers.delete(tabId);
+          localTabCleanups.delete(tabId);
+          connectionTabs.get(ws)?.delete(tabId);
+          console.log(`[Server] Tab closed: ${tabId}`);
+          break;
+        }
+
         default:
-          ws.send(JSON.stringify({ type: 'error', content: `Unknown message type: ${message.type}` }));
+          ws.send(JSON.stringify({ type: 'error', content: `Unknown message type: ${message.type}`, tabId }));
       }
     } catch (error) {
       ws.send(JSON.stringify({
@@ -1169,18 +1187,21 @@ wss.on('connection', (ws) => {
     console.log('Client disconnected');
     wsConnectionsActive.dec({ server: 'main' });
     allClients.delete(ws);
-    connectionSessions.delete(ws);
-    cleanupListeners(); // Remove event listeners but keep manager in sessionManagers
-    managers.delete(ws);
+    // Remove event listeners for all tabs but keep managers in sessionManagers for reconnection
+    for (const cleanup of localTabCleanups.values()) cleanup();
+    localTabManagers.clear();
+    localTabCleanups.clear();
+    connectionTabs.delete(ws);
   });
 
   ws.on('error', (error) => {
     console.error('WebSocket error:', error);
     wsConnectionsActive.dec({ server: 'main' });
     allClients.delete(ws);
-    connectionSessions.delete(ws);
-    cleanupListeners();
-    managers.delete(ws);
+    for (const cleanup of localTabCleanups.values()) cleanup();
+    localTabManagers.clear();
+    localTabCleanups.clear();
+    connectionTabs.delete(ws);
   });
 });
 

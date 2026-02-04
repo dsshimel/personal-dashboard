@@ -423,24 +423,25 @@ describe('WebSocket Message Handlers', () => {
     });
   });
 
-  describe('reset clears connectionSessions', () => {
-    test('removes ws from connectionSessions on reset', () => {
-      const connectionSessions = new Map<MockWebSocket, string>();
+  describe('reset clears tabSessions', () => {
+    test('removes tabId from tabSessions on reset', () => {
+      const tabSessions = new Map<string, string>();
       const sessionManagers = new Map<string, MockClaudeCodeManager>();
 
-      // Simulate an active session
-      connectionSessions.set(ws, 'old-session');
+      // Simulate an active session on a tab
+      const tabId = 'tab-project';
+      tabSessions.set(tabId, 'old-session');
       sessionManagers.set('old-session', manager);
 
       // Simulate reset handler
-      const oldSessionId = connectionSessions.get(ws);
+      const oldSessionId = tabSessions.get(tabId);
       if (oldSessionId) {
         sessionManagers.delete(oldSessionId);
       }
-      connectionSessions.delete(ws);
+      tabSessions.delete(tabId);
       manager.reset();
 
-      expect(connectionSessions.has(ws)).toBe(false);
+      expect(tabSessions.has(tabId)).toBe(false);
       expect(sessionManagers.has('old-session')).toBe(false);
       expect(manager.sessionId).toBeNull();
     });
@@ -584,30 +585,30 @@ describe('attachManagerToWebSocket', () => {
 
   let manager: MockManager;
   let ws: MockWebSocket;
-  let connectionSessions: Map<MockWebSocket, string>;
+  let tabSessions: Map<string, string>;
 
   function attachManagerToWebSocket(
     manager: MockManager,
     ws: MockWebSocket,
+    tabId: string,
     getSessionId: () => string | undefined
   ): () => void {
     const outputHandler = (data: { type: string; content: string }) => {
-      const sessionId = getSessionId();
       if (ws.readyState === MockWebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: data.type, content: data.content }));
+        ws.send(JSON.stringify({ type: data.type, content: data.content, tabId }));
       }
     };
 
     const sessionIdHandler = (sessionId: string) => {
-      connectionSessions.set(ws, sessionId);
+      tabSessions.set(tabId, sessionId);
       if (ws.readyState === MockWebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'session', content: sessionId }));
+        ws.send(JSON.stringify({ type: 'session', content: sessionId, tabId }));
       }
     };
 
     const errorHandler = (error: Error) => {
       if (ws.readyState === MockWebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'error', content: error.message }));
+        ws.send(JSON.stringify({ type: 'error', content: error.message, tabId }));
       }
     };
 
@@ -625,39 +626,39 @@ describe('attachManagerToWebSocket', () => {
   beforeEach(() => {
     manager = new MockManager();
     ws = new MockWebSocket();
-    connectionSessions = new Map();
+    tabSessions = new Map();
   });
 
-  test('forwards output events to WebSocket', () => {
-    attachManagerToWebSocket(manager, ws, () => undefined);
+  test('forwards output events to WebSocket with tabId', () => {
+    attachManagerToWebSocket(manager, ws, 'tab-test', () => undefined);
 
     manager.emit('output', { type: 'output', content: 'Hello' });
 
     expect(ws.sentMessages.length).toBe(1);
-    expect(JSON.parse(ws.sentMessages[0])).toEqual({ type: 'output', content: 'Hello' });
+    expect(JSON.parse(ws.sentMessages[0])).toEqual({ type: 'output', content: 'Hello', tabId: 'tab-test' });
   });
 
-  test('forwards sessionId events to WebSocket', () => {
-    attachManagerToWebSocket(manager, ws, () => undefined);
+  test('forwards sessionId events to WebSocket with tabId', () => {
+    attachManagerToWebSocket(manager, ws, 'tab-test', () => undefined);
 
     manager.emit('sessionId', 'new-session-id');
 
     expect(ws.sentMessages.length).toBe(1);
-    expect(JSON.parse(ws.sentMessages[0])).toEqual({ type: 'session', content: 'new-session-id' });
-    expect(connectionSessions.get(ws)).toBe('new-session-id');
+    expect(JSON.parse(ws.sentMessages[0])).toEqual({ type: 'session', content: 'new-session-id', tabId: 'tab-test' });
+    expect(tabSessions.get('tab-test')).toBe('new-session-id');
   });
 
-  test('forwards error events to WebSocket', () => {
-    attachManagerToWebSocket(manager, ws, () => undefined);
+  test('forwards error events to WebSocket with tabId', () => {
+    attachManagerToWebSocket(manager, ws, 'tab-test', () => undefined);
 
     manager.emit('error', new Error('Something went wrong'));
 
     expect(ws.sentMessages.length).toBe(1);
-    expect(JSON.parse(ws.sentMessages[0])).toEqual({ type: 'error', content: 'Something went wrong' });
+    expect(JSON.parse(ws.sentMessages[0])).toEqual({ type: 'error', content: 'Something went wrong', tabId: 'tab-test' });
   });
 
   test('does not send to closed WebSocket', () => {
-    attachManagerToWebSocket(manager, ws, () => undefined);
+    attachManagerToWebSocket(manager, ws, 'tab-test', () => undefined);
     ws.readyState = MockWebSocket.CLOSED;
 
     manager.emit('output', { type: 'output', content: 'Hello' });
@@ -666,7 +667,7 @@ describe('attachManagerToWebSocket', () => {
   });
 
   test('cleanup function removes listeners', () => {
-    const cleanup = attachManagerToWebSocket(manager, ws, () => undefined);
+    const cleanup = attachManagerToWebSocket(manager, ws, 'tab-test', () => undefined);
 
     manager.emit('output', { type: 'output', content: 'Before cleanup' });
     expect(ws.sentMessages.length).toBe(1);
@@ -684,15 +685,21 @@ describe('attachManagerToWebSocket', () => {
 
 describe('REST Endpoint Logic', () => {
   describe('GET /health', () => {
-    test('returns status and connection count', () => {
-      const managers = new Map();
-      managers.set('ws1', {});
-      managers.set('ws2', {});
+    test('returns status, connection count, and tab count', () => {
+      const connectionTabs = new Map();
+      connectionTabs.set('ws1', new Set(['tab-a', 'tab-b']));
+      connectionTabs.set('ws2', new Set(['tab-c']));
 
-      const response = { status: 'ok', connections: managers.size };
+      const tabManagers = new Map();
+      tabManagers.set('tab-a', {});
+      tabManagers.set('tab-b', {});
+      tabManagers.set('tab-c', {});
+
+      const response = { status: 'ok', connections: connectionTabs.size, tabs: tabManagers.size };
 
       expect(response.status).toBe('ok');
       expect(response.connections).toBe(2);
+      expect(response.tabs).toBe(3);
     });
   });
 
@@ -873,37 +880,33 @@ describe('Connection Lifecycle', () => {
   test('disconnect removes client from collections', () => {
     const ws = new MockWebSocket();
     const allClients = new Set<MockWebSocket>();
-    const managers = new Map<MockWebSocket, unknown>();
-    const connectionSessions = new Map<MockWebSocket, string>();
+    const connectionTabs = new Map<MockWebSocket, Set<string>>();
 
     allClients.add(ws);
-    managers.set(ws, {});
-    connectionSessions.set(ws, 'test-session');
+    connectionTabs.set(ws, new Set(['tab-a', 'tab-b']));
 
     // Simulate close handler
     allClients.delete(ws);
-    connectionSessions.delete(ws);
-    managers.delete(ws);
+    connectionTabs.delete(ws);
 
     expect(allClients.has(ws)).toBe(false);
-    expect(managers.has(ws)).toBe(false);
-    expect(connectionSessions.has(ws)).toBe(false);
+    expect(connectionTabs.has(ws)).toBe(false);
   });
 
   test('error removes client from collections', () => {
     const ws = new MockWebSocket();
     const allClients = new Set<MockWebSocket>();
-    const managers = new Map<MockWebSocket, unknown>();
+    const connectionTabs = new Map<MockWebSocket, Set<string>>();
 
     allClients.add(ws);
-    managers.set(ws, {});
+    connectionTabs.set(ws, new Set(['tab-x']));
 
     // Simulate error handler
     allClients.delete(ws);
-    managers.delete(ws);
+    connectionTabs.delete(ws);
 
     expect(allClients.has(ws)).toBe(false);
-    expect(managers.has(ws)).toBe(false);
+    expect(connectionTabs.has(ws)).toBe(false);
   });
 });
 

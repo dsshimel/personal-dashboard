@@ -355,6 +355,46 @@
   text-align: center;
 }
 
+.tab-close-button {
+  margin-left: 4px;
+  font-size: 14px;
+  line-height: 1;
+  color: #666;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.tab:hover .tab-close-button {
+  opacity: 1;
+}
+
+.tab-close-button:hover {
+  color: #f87171;
+}
+
+.tab-separator {
+  display: inline-block;
+  width: 1px;
+  background-color: #2a3f5f;
+  margin: 6px 8px;
+  align-self: stretch;
+}
+
+.tab-processing-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: #60a5fa;
+  animation: tab-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes tab-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
 .terminal-title {
   display: flex;
   align-items: center;
