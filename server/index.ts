@@ -16,6 +16,7 @@ import { initTodoDb, listTodos, createTodo, updateTodo, deleteTodo } from './tod
 import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest, generateBriefingPreview, getLatestBriefing, listBriefings } from './daily-email.js';
 import { initRecitationsDb, listRecitations, createRecitation, updateRecitation, deleteRecitation } from './recitations.js';
 import { initResearchDb, listTopics, createTopic, updateTopic, deleteTopic, listArticles, deleteArticle, generateResearchArticles } from './research.js';
+import { initFeatureFlagsDb, listFeatureFlags, toggleFeatureFlag } from './feature-flags.js';
 import { getWeatherLocation, setWeatherLocation, geocodeLocation, fetchConfiguredWeather } from './weather.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
@@ -34,6 +35,7 @@ initTodoDb(db);
 initDailyEmailDb(db);
 initRecitationsDb(db);
 initResearchDb(db);
+initFeatureFlagsDb(db);
 
 startDailyEmailScheduler();
 
@@ -764,6 +766,35 @@ app.post('/research/generate', async (_req, res) => {
   } catch (error) {
     console.error('Error generating research:', error);
     res.status(500).json({ error: 'Failed to generate research' });
+  }
+});
+
+// --- Feature Flags Endpoints ---
+
+app.get('/feature-flags', (_req, res) => {
+  try {
+    const flags = listFeatureFlags();
+    res.json(flags);
+  } catch (error) {
+    console.error('Error listing feature flags:', error);
+    res.status(500).json({ error: 'Failed to list feature flags' });
+  }
+});
+
+app.put('/feature-flags/:key', (req, res) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      res.status(400).json({ error: 'enabled (boolean) is required' });
+      return;
+    }
+    const flag = toggleFeatureFlag(req.params.key, enabled);
+    console.log(`Feature flag ${flag.key} ${enabled ? 'enabled' : 'disabled'}`);
+    res.json(flag);
+  } catch (error) {
+    console.error('Error toggling feature flag:', error);
+    const statusCode = error instanceof Error && error.message.includes('Unknown') ? 404 : 500;
+    res.status(statusCode).json({ error: error instanceof Error ? error.message : 'Failed to toggle feature flag' });
   }
 });
 

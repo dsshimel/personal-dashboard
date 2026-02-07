@@ -128,7 +128,7 @@ interface StoredTerminalTab {
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 
 /** Currently active UI tab. */
-type Section = 'briefing' | 'crm' | 'diagnostics' | 'hardware' | 'recitations' | 'research' | 'terminal' | 'todo'
+type Section = 'briefing' | 'crm' | 'diagnostics' | 'feature-flags' | 'hardware' | 'recitations' | 'research' | 'terminal' | 'todo'
 type TerminalTab = 'terminal' | 'projects' | 'conversations'
 type HardwareTab = 'webcams'
 type DiagnosticsTab = 'logs' | 'client-perf' | 'server-perf'
@@ -137,13 +137,15 @@ type TodoTab = 'todos'
 type BriefingTab = 'briefing-editor'
 type RecitationsTab = 'recitations-editor'
 type ResearchTab = 'topics'
-type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab | RecitationsTab | ResearchTab
+type FeatureFlagsTab = 'flags'
+type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab | RecitationsTab | ResearchTab | FeatureFlagsTab
 
 // Keep alphabetized by section key
 const SECTION_TABS: Record<Section, SubTab[]> = {
   briefing: ['briefing-editor'],
   crm: ['contacts'],
   diagnostics: ['logs', 'client-perf', 'server-perf'],
+  'feature-flags': ['flags'],
   hardware: ['webcams'],
   recitations: ['recitations-editor'],
   research: ['topics'],
@@ -156,6 +158,7 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
   'client-perf': 'Client Performance',
   contacts: 'Contacts',
   conversations: 'Conversations',
+  flags: 'Flags',
   'briefing-editor': 'Prompt Editor',
   projects: 'Projects',
   'recitations-editor': 'Recitations',
@@ -171,12 +174,21 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
 const SECTION_LABELS: Record<Section, string> = {
   briefing: '☀️ Daily Briefing',
   diagnostics: '🩺 Diagnostics',
+  'feature-flags': '🚩 Feature Flags',
   crm: '👥 Friend CRM',
   hardware: '🖥️ Hardware',
   recitations: '📖 Recitations',
   research: '🔬 Research',
   terminal: '💻 Terminal',
   todo: '✅ TODO List',
+}
+
+/** Represents a feature flag. */
+interface FeatureFlag {
+  key: string
+  label: string
+  description: string
+  enabled: boolean
 }
 
 /** Represents a CRM contact. */
@@ -307,6 +319,10 @@ function App() {
   const [newContactSocial, setNewContactSocial] = useState('')
   const [newInteractionNote, setNewInteractionNote] = useState('')
   const [newInteractionDate, setNewInteractionDate] = useState(() => new Date().toISOString().split('T')[0])
+
+  // Feature flags state
+  const [featureFlags, setFeatureFlags] = useState<FeatureFlag[]>([])
+  const [loadingFlags, setLoadingFlags] = useState(false)
 
   // Todo state
   const [todos, setTodos] = useState<TodoItem[]>([])
@@ -839,6 +855,42 @@ function App() {
       setLoadingProjectConversations(false)
     }
   }, [])
+
+  // --- Feature flags data fetching ---
+
+  /** Fetches all feature flags from the API. */
+  const fetchFeatureFlags = useCallback(async () => {
+    setLoadingFlags(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/feature-flags`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setFeatureFlags(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch feature flags:', error)
+    } finally {
+      setLoadingFlags(false)
+    }
+  }, [])
+
+  /** Toggles a feature flag's enabled state. */
+  const handleToggleFlag = useCallback(async (key: string, enabled: boolean) => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/feature-flags/${encodeURIComponent(key)}`
+      const response = await fetch(apiUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      })
+      if (response.ok) {
+        fetchFeatureFlags()
+      }
+    } catch (error) {
+      console.error('Failed to toggle feature flag:', error)
+    }
+  }, [fetchFeatureFlags])
 
   // --- Todo data fetching ---
 
@@ -1600,6 +1652,13 @@ function App() {
       fetchLatestBriefing()
     }
   }, [activeSubTab, fetchBriefingPrompt, fetchLatestBriefing])
+
+  // Fetch feature flags when flags tab is active
+  useEffect(() => {
+    if (activeSubTab === 'flags') {
+      fetchFeatureFlags()
+    }
+  }, [activeSubTab, fetchFeatureFlags])
 
   // Fetch todos when todo tab is active
   useEffect(() => {
@@ -2937,6 +2996,40 @@ function App() {
                 </div>
               )}
             </>
+          )}
+        </div>
+
+        {/* Feature Flags - always mounted, hidden when inactive */}
+        <div className={`feature-flags-container ${activeSubTab !== 'flags' ? 'tab-hidden' : ''}`}>
+          {loadingFlags && featureFlags.length === 0 && (
+            <div className="welcome-message">Loading feature flags...</div>
+          )}
+
+          {!loadingFlags && featureFlags.length === 0 && (
+            <div className="welcome-message">
+              No feature flags defined.
+            </div>
+          )}
+
+          {featureFlags.length > 0 && (
+            <div className="feature-flags-list">
+              {featureFlags.map(flag => (
+                <div key={flag.key} className="feature-flag-item">
+                  <label className="feature-flag-toggle">
+                    <input
+                      type="checkbox"
+                      checked={flag.enabled}
+                      onChange={() => handleToggleFlag(flag.key, !flag.enabled)}
+                    />
+                    <span className="feature-flag-slider" />
+                  </label>
+                  <div className="feature-flag-info">
+                    <span className="feature-flag-label">{flag.label}</span>
+                    <span className="feature-flag-description">{flag.description}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
 
