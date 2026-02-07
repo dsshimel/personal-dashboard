@@ -63,6 +63,8 @@ interface Session {
   lastModified: string
   /** Project directory hash the session belongs to. */
   project: string
+  /** Dashboard project ID, if matched to a known project. */
+  projectId: string | null
 }
 
 /** Represents a project with a directory and optional GitHub link. */
@@ -264,6 +266,7 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sessions, setSessions] = useState<Session[]>([])
   const [loadingSessions, setLoadingSessions] = useState(false)
+  const [filterByProject, setFilterByProject] = useState(true)
 
   // UI state
   const [activeSection, setActiveSection] = useState<Section>('terminal')
@@ -1854,15 +1857,53 @@ function App() {
     }
   }
 
-  /** Resumes a previous session and loads its conversation history on the active terminal tab. */
+  /** Resumes a previous session and loads its conversation history, switching tabs if needed. */
   const handleSelectSession = async (session: Session) => {
     if (!activeTerminalTab) return
-    const tabId = activeTerminalTab.id
+
+    // If the session belongs to a different project, switch to (or create) that project's tab
+    let tabId = activeTerminalTab.id
+    let workingDirectory = activeTerminalTab.workingDirectory
+    if (session.projectId && session.projectId !== activeTerminalTab.projectId) {
+      const targetProject = projects.find(p => p.id === session.projectId)
+      if (targetProject) {
+        const targetTabId = `tab-${targetProject.id}`
+        const existingTab = terminalTabsRef.current.find(t => t.id === targetTabId)
+        if (existingTab) {
+          // Switch to existing tab
+          setActiveTerminalTabId(targetTabId)
+          tabId = targetTabId
+          workingDirectory = existingTab.workingDirectory
+        } else {
+          // Create new tab for the project
+          const newTab: TerminalTabState = {
+            id: targetTabId,
+            projectId: targetProject.id,
+            projectName: targetProject.name,
+            workingDirectory: targetProject.directory,
+            messages: [],
+            sessionId: null,
+            lastMessageId: 0,
+            status: 'connected',
+            currentTool: null,
+            pendingImages: [],
+          }
+          setTerminalTabs(prev => {
+            const next = [...prev, newTab]
+            persistTabs(next, targetTabId)
+            return next
+          })
+          setActiveTerminalTabId(targetTabId)
+          tabId = targetTabId
+          workingDirectory = targetProject.directory
+        }
+      }
+    }
 
     wsRef.current?.send(JSON.stringify({
       type: 'resume',
       sessionId: session.id,
-      workingDirectory: activeTerminalTab.workingDirectory,
+      workingDirectory,
       tabId,
     }))
     updateTab(tabId, {
@@ -2742,11 +2783,6 @@ function App() {
 
         {/* Conversations - always mounted, hidden when inactive */}
         <div className={`conversations-container ${activeSubTab !== 'conversations' ? 'tab-hidden' : ''}`}>
-          {activeTerminalTab && (
-            <div className="conversations-project-badge">
-              Project: <strong>{activeTerminalTab.projectName}</strong>
-            </div>
-          )}
           <div className="conversations-header">
             <h3>Conversations</h3>
             <button
@@ -2758,35 +2794,53 @@ function App() {
               + New Conversation
             </button>
           </div>
-          {!activeTerminalTab ? (
-            <div className="welcome-message">
-              Open a project first to manage conversations.
-            </div>
-          ) : loadingSessions && sessions.length === 0 ? (
-            <div className="welcome-message">Loading conversations...</div>
-          ) : sessions.length === 0 ? (
-            <div className="welcome-message">
-              No conversations yet.
-              <br />
-              Start a conversation from the Terminal tab.
-            </div>
-          ) : (
-            <div className="conversations-list">
-              {sessions.map(session => (
-                <button
-                  key={session.id}
-                  className={`session-item ${activeTerminalTab.sessionId === session.id ? 'active' : ''}`}
-                  onClick={() => handleSelectSession(session)}
-                >
-                  <div className="session-name">{session.name}</div>
-                  <div className="session-meta">
-                    <span className="session-uuid">{session.id.slice(0, 8)}...</span>
-                    <span className="session-date">{formatDate(session.lastModified)}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
+          {activeTerminalTab && (
+            <label className="conversations-filter">
+              <input
+                type="checkbox"
+                checked={filterByProject}
+                onChange={(e) => setFilterByProject(e.target.checked)}
+              />
+              Project only
+            </label>
           )}
+          {(() => {
+            const filteredSessions = filterByProject
+              ? sessions.filter(s => s.projectId != null)
+              : sessions
+            return !activeTerminalTab ? (
+              <div className="welcome-message">
+                Open a project first to manage conversations.
+              </div>
+            ) : loadingSessions && sessions.length === 0 ? (
+              <div className="welcome-message">Loading conversations...</div>
+            ) : filteredSessions.length === 0 ? (
+              <div className="welcome-message">
+                No conversations yet.
+                <br />
+                Start a conversation from the Terminal tab.
+              </div>
+            ) : (
+              <div className="conversations-list">
+                {filteredSessions.map(session => (
+                  <button
+                    key={session.id}
+                    className={`session-item ${activeTerminalTab.sessionId === session.id ? 'active' : ''}`}
+                    onClick={() => handleSelectSession(session)}
+                  >
+                    <div className="session-name">{session.name}</div>
+                    <div className="session-meta">
+                      {session.projectId && (
+                        <span className="session-project">{projects.find(p => p.id === session.projectId)?.name}</span>
+                      )}
+                      <span className="session-uuid">{session.id.slice(0, 8)}...</span>
+                      <span className="session-date">{formatDate(session.lastModified)}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )
+          })()}
         </div>
 
         {/* Daily Briefing - always mounted, hidden when inactive */}

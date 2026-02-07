@@ -214,17 +214,25 @@
   padding: 16px;
 }
 
-.conversations-project-badge {
-  padding: 8px 12px;
-  background-color: #1a2744;
-  border-radius: 6px;
-  color: #a0a0a0;
+.conversations-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 13px;
+  color: #a0a0a0;
   margin-bottom: 12px;
+  cursor: pointer;
+  user-select: none;
 }
 
-.conversations-project-badge strong {
+.conversations-filter input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.session-project {
   color: #4ade80;
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .conversations-header {

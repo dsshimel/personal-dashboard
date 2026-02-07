@@ -855,11 +855,22 @@ app.get('/sessions', async (_req, res) => {
     const claudeDir = join(homedir(), '.claude', 'projects');
     const projectDirs = await readdir(claudeDir, { withFileTypes: true });
 
+    // Build a map from Claude directory hash to dashboard project ID
+    // Claude stores projects as e.g. "C--Users-dsshi-Documents-repos-foo"
+    // derived from "C:\Users\dsshi\Documents\repos\foo"
+    const allProjects = await loadProjects();
+    const dirHashToProjectId = new Map<string, string>();
+    for (const p of allProjects) {
+      const hash = p.directory.replace(/\\/g, '-').replace(/\//g, '-').replace(/:/g, '-');
+      dirHashToProjectId.set(hash, p.id);
+    }
+
     const sessions: Array<{
       id: string;
       name: string;
       lastModified: Date;
       project: string;
+      projectId: string | null;
     }> = [];
 
     for (const projectDir of projectDirs) {
@@ -929,6 +940,7 @@ app.get('/sessions', async (_req, res) => {
               name,
               lastModified: stats?.mtime || new Date(),
               project: projectDir.name,
+              projectId: dirHashToProjectId.get(projectDir.name) || null,
             });
           }
         }
