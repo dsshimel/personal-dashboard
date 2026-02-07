@@ -169,14 +169,14 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
 
 // Keep sidebar sections alphabetized by display label
 const SECTION_LABELS: Record<Section, string> = {
-  briefing: 'Daily Briefing',
-  diagnostics: 'Diagnostics',
-  crm: 'Friend CRM',
-  hardware: 'Hardware',
-  recitations: 'Recitations',
-  research: 'Research',
-  terminal: 'Terminal',
-  todo: 'TODO List',
+  briefing: '☀️ Daily Briefing',
+  diagnostics: '🩺 Diagnostics',
+  crm: '👥 Friend CRM',
+  hardware: '🖥️ Hardware',
+  recitations: '📖 Recitations',
+  research: '🔬 Research',
+  terminal: '💻 Terminal',
+  todo: '✅ TODO List',
 }
 
 /** Represents a CRM contact. */
