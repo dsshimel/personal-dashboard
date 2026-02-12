@@ -2,19 +2,20 @@
  * @fileoverview Webcam streaming manager using FFmpeg.
  *
  * Provides webcam device enumeration and MJPEG streaming via FFmpeg.
- * Designed for Windows DirectShow devices, streams frames as base64 JPEG.
+ * Supports Linux (Video4Linux2) and Windows (DirectShow) platforms.
  *
  * Always captures at the camera's native max resolution and frame rate,
  * then uses FFmpeg output filters to scale and adjust FPS per output mode.
  */
 
 import { EventEmitter } from 'events';
+import { readdir } from 'fs/promises';
 
 const log = (msg: string) => {
   console.log(msg);
 };
 
-/** A supported resolution+framerate combination reported by DirectShow. */
+/** A supported resolution+framerate combination reported by the capture device. */
 export interface DeviceMode {
   /** Horizontal resolution in pixels. */
   width: number;
@@ -28,13 +29,13 @@ export interface DeviceMode {
 
 /** Represents a webcam device detected by FFmpeg. */
 export interface WebcamDevice {
-  /** Device identifier (device name on Windows DirectShow). */
+  /** Device identifier (device path on Linux, device name on Windows). */
   id: string;
   /** Human-readable device name. */
   name: string;
   /** Device type (only 'video' devices are used). */
   type: 'video' | 'audio';
-  /** Supported modes discovered via FFmpeg -list_options. */
+  /** Supported modes discovered via FFmpeg device query. */
   capabilities?: DeviceMode[];
   /** The best native mode (highest MJPEG resolution and fps). */
   nativeMode?: { width: number; height: number; fps: number; pixelFormat: string };
@@ -80,7 +81,7 @@ interface FFmpegProcess {
  * Manages webcam device enumeration and MJPEG streaming via FFmpeg.
  *
  * Emits events for frames, stream lifecycle, and errors.
- * Uses FFmpeg DirectShow on Windows to capture and encode MJPEG.
+ * Uses Video4Linux2 on Linux and DirectShow on Windows.
  */
 export class WebcamManager extends EventEmitter {
   /** Map of device ID to active FFmpeg process. */
@@ -107,58 +108,21 @@ export class WebcamManager extends EventEmitter {
   }
 
   /**
-   * Lists available webcam devices using FFmpeg DirectShow.
+   * Lists available webcam devices.
    *
-   * Parses FFmpeg's device enumeration output to extract video devices,
-   * then queries each video device for its supported modes.
+   * On Linux, enumerates /dev/video* devices and uses v4l2-ctl to identify
+   * capture devices. On Windows, uses FFmpeg DirectShow device enumeration.
+   * Queries each video device for its supported modes.
    *
    * @returns Array of detected webcam devices with capabilities.
    */
   async listDevices(): Promise<WebcamDevice[]> {
-    const devices: WebcamDevice[] = [];
-
-    try {
-      // On Windows, use DirectShow to list devices
-      const proc = Bun.spawn(['ffmpeg', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'], {
-        stdout: 'pipe',
-        stderr: 'pipe',
-      });
-
-      // FFmpeg outputs device list to stderr
-      const stderr = await new Response(proc.stderr).text();
-      await proc.exited;
-
-      // Parse the output to extract device names
-      // Format: [dshow @ ...] "Device Name" (video) or (audio)
-      const lines = stderr.split('\n');
-
-      for (const line of lines) {
-        // Skip alternative name lines
-        if (line.includes('Alternative name')) {
-          continue;
-        }
-
-        // Parse device lines - they contain quoted device names followed by (video) or (audio)
-        // Example: [dshow @ 000001...] "Integrated Webcam" (video)
-        const match = line.match(/\[dshow @[^\]]+\]\s+"([^"]+)"\s+\((video|audio)\)/);
-        if (match) {
-          const deviceName = match[1];
-          const deviceType = match[2] as 'video' | 'audio';
-
-          // Only include video devices
-          if (deviceType === 'video') {
-            devices.push({
-              id: deviceName, // Use name as ID for dshow
-              name: deviceName,
-              type: 'video',
-            });
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Error listing webcam devices:', error);
-      this.emit('error', { type: 'list-error', error: String(error) });
-    }
+    const devices: WebcamDevice[] =
+      process.platform === 'win32'
+        ? await this.listDevicesWindows()
+        : process.platform === 'linux'
+          ? await this.listDevicesLinux()
+          : (() => { throw new Error(`Unsupported platform: ${process.platform}. Only linux and win32 are supported.`); })();
 
     // Query capabilities for each video device
     for (const device of devices) {
@@ -176,31 +140,202 @@ export class WebcamManager extends EventEmitter {
       }
     }
 
+    // Filter out devices with no detected capabilities (ISP pipeline nodes, metadata endpoints, etc.)
+    return devices.filter(d => d.capabilities && d.capabilities.length > 0);
+  }
+
+  /**
+   * Lists webcam devices on Linux using /dev/video* and v4l2-ctl.
+   *
+   * Filters out metadata devices (only includes capture-capable devices).
+   */
+  private async listDevicesLinux(): Promise<WebcamDevice[]> {
+    const devices: WebcamDevice[] = [];
+
+    try {
+      const videoPaths = await this.listVideoDeviceNodes();
+      log(`[WebcamManager] Found ${videoPaths.length} /dev/video* nodes: ${videoPaths.join(', ')}`);
+
+      // Check each device with v4l2-ctl to filter capture devices and get names
+      // v4l2-ctl is from the v4l-utils package (apt install v4l-utils)
+      for (const devPath of videoPaths) {
+        try {
+          const proc = Bun.spawn(['v4l2-ctl', `--device=${devPath}`, '--info'], {
+            stdout: 'pipe',
+            stderr: 'pipe',
+          });
+
+          const stdout = await new Response(proc.stdout).text();
+          const exitCode = await proc.exited;
+          log(`[WebcamManager] v4l2-ctl ${devPath}: exit=${exitCode}, hasCapture=${stdout.includes('Video Capture')}`);
+
+          // Skip non-capture devices (metadata nodes report "Video Output" or no "Video Capture")
+          if (!stdout.includes('Video Capture')) {
+            continue;
+          }
+
+          // Extract card name from "Card type     : <name>" line
+          const cardMatch = stdout.match(/Card type\s*:\s*(.+)/);
+          const name = cardMatch ? cardMatch[1].trim() : devPath;
+
+          devices.push({
+            id: devPath,
+            name,
+            type: 'video',
+          });
+          log(`[WebcamManager] Added capture device: ${devPath} (${name})`);
+        } catch (err) {
+          const msg = String(err);
+          if (msg.includes('ENOENT') || msg.includes('not found')) {
+            log(`[WebcamManager] v4l2-ctl not found. Install v4l-utils: apt install v4l-utils`);
+            break;
+          }
+          log(`[WebcamManager] Failed to query ${devPath}: ${msg}`);
+        }
+      }
+    } catch (error) {
+      console.error('Error listing webcam devices:', error);
+      this.emit('error', { type: 'list-error', error: String(error) });
+    }
+
+    return devices;
+  }
+
+  /** Enumerates /dev/video* device node paths. */
+  private async listVideoDeviceNodes(): Promise<string[]> {
+    const entries = await readdir('/dev');
+    return entries
+      .filter(e => e.startsWith('video'))
+      .map(e => `/dev/${e}`)
+      .sort();
+  }
+
+  /**
+   * Lists webcam devices on Windows using FFmpeg DirectShow.
+   */
+  private async listDevicesWindows(): Promise<WebcamDevice[]> {
+    const devices: WebcamDevice[] = [];
+
+    try {
+      const proc = Bun.spawn(['ffmpeg', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'], {
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+
+      // FFmpeg outputs device list to stderr
+      const stderr = await new Response(proc.stderr).text();
+      await proc.exited;
+
+      const lines = stderr.split('\n');
+
+      for (const line of lines) {
+        if (line.includes('Alternative name')) {
+          continue;
+        }
+
+        // Example: [dshow @ 000001...] "Integrated Webcam" (video)
+        const match = line.match(/\[dshow @[^\]]+\]\s+"([^"]+)"\s+\((video|audio)\)/);
+        if (match) {
+          const deviceName = match[1];
+          const deviceType = match[2] as 'video' | 'audio';
+
+          if (deviceType === 'video') {
+            devices.push({
+              id: deviceName,
+              name: deviceName,
+              type: 'video',
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error listing webcam devices:', error);
+      this.emit('error', { type: 'list-error', error: String(error) });
+    }
+
     return devices;
   }
 
   /**
    * Queries supported resolutions and frame rates for a specific device.
    *
-   * Runs: ffmpeg -f dshow -list_options true -i video=<deviceName>
-   * Parses stderr output for resolution/fps lines.
+   * On Linux, runs: ffmpeg -f v4l2 -list_formats all -i <device>
+   * On Windows, runs: ffmpeg -f dshow -list_options true -i video=<device>
    *
-   * @param deviceName - The DirectShow device name to query.
+   * @param deviceId - The device identifier to query.
    * @returns Array of supported modes.
    */
-  private async queryDeviceCapabilities(deviceName: string): Promise<DeviceMode[]> {
+  private async queryDeviceCapabilities(deviceId: string): Promise<DeviceMode[]> {
+    if (process.platform === 'win32') return this.queryCapabilitiesWindows(deviceId);
+    if (process.platform === 'linux') return this.queryCapabilitiesLinux(deviceId);
+    throw new Error(`Unsupported platform: ${process.platform}`);
+  }
+
+  /**
+   * Queries device capabilities on Linux using FFmpeg v4l2.
+   *
+   * Parses output like:
+   *   [video4linux2,v4l2 @ ...] Compressed:       mjpeg : ... : 640x480 1920x1080
+   *   [video4linux2,v4l2 @ ...] Raw       :     yuyv422 : ... : 640x480 320x240
+   */
+  private async queryCapabilitiesLinux(deviceId: string): Promise<DeviceMode[]> {
+    const modes: DeviceMode[] = [];
+    try {
+      log(`[WebcamManager] Querying capabilities for ${deviceId} via ffmpeg -f v4l2 -list_formats all`);
+      const proc = Bun.spawn(
+        ['ffmpeg', '-f', 'v4l2', '-list_formats', 'all', '-i', deviceId],
+        { stdout: 'pipe', stderr: 'pipe' }
+      );
+      const stderr = await new Response(proc.stderr).text();
+      const exitCode = await proc.exited;
+      const v4l2Lines = stderr.split('\n').filter(l => l.includes('[video4linux2'));
+      log(`[WebcamManager] ffmpeg exit=${exitCode}, v4l2 format lines: ${v4l2Lines.length}`);
+
+      // Each line has a pixel format and space-separated resolutions:
+      // [video4linux2,v4l2 @ ...] Compressed:       mjpeg :     Motion-JPEG : 640x480 160x90 ... 1920x1080
+      // [video4linux2,v4l2 @ ...] Raw       :     yuyv422 :     YUYV 4:2:2 : 640x480 160x90 ...
+      const lineRegex = /\[video4linux2.*\]\s+(?:Compressed|Raw)\s*:\s*(\w+)\s*:.*:\s+([\dx\s]+)/;
+      for (const line of stderr.split('\n')) {
+        const m = line.match(lineRegex);
+        if (m) {
+          const pixelFormat = m[1];
+          const resolutions = m[2].trim().split(/\s+/);
+          for (const res of resolutions) {
+            const parts = res.match(/^(\d+)x(\d+)$/);
+            if (parts) {
+              modes.push({
+                pixelFormat,
+                width: parseInt(parts[1], 10),
+                height: parseInt(parts[2], 10),
+                maxFps: 30, // v4l2 list_formats doesn't report fps; 30 is standard USB webcam default
+              });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      log(`[WebcamManager] Failed to query capabilities for ${deviceId}: ${error}`);
+    }
+    return modes;
+  }
+
+  /**
+   * Queries device capabilities on Windows using FFmpeg DirectShow.
+   *
+   * Parses output like:
+   *   pixel_format=yuyv422  min s=640x480 fps=5 max s=640x480 fps=30
+   *   vcodec=mjpeg  min s=1280x720 fps=5 max s=1280x720 fps=30
+   */
+  private async queryCapabilitiesWindows(deviceId: string): Promise<DeviceMode[]> {
     const modes: DeviceMode[] = [];
     try {
       const proc = Bun.spawn(
-        ['ffmpeg', '-f', 'dshow', '-list_options', 'true', '-i', `video=${deviceName}`],
+        ['ffmpeg', '-f', 'dshow', '-list_options', 'true', '-i', `video=${deviceId}`],
         { stdout: 'pipe', stderr: 'pipe' }
       );
       const stderr = await new Response(proc.stderr).text();
       await proc.exited;
 
-      // Parse lines like:
-      //   pixel_format=yuyv422  min s=640x480 fps=5 max s=640x480 fps=30
-      //   vcodec=mjpeg  min s=1280x720 fps=5 max s=1280x720 fps=30
       const lineRegex =
         /(?:pixel_format=(\w+)|vcodec=(\w+))\s+min\s+s=(\d+)x(\d+)\s+fps=([\d.]+)\s+max\s+s=(\d+)x(\d+)\s+fps=([\d.]+)/;
       for (const line of stderr.split('\n')) {
@@ -215,7 +350,7 @@ export class WebcamManager extends EventEmitter {
         }
       }
     } catch (error) {
-      log(`[WebcamManager] Failed to query capabilities for ${deviceName}: ${error}`);
+      log(`[WebcamManager] Failed to query capabilities for ${deviceId}: ${error}`);
     }
     return modes;
   }
@@ -284,18 +419,22 @@ export class WebcamManager extends EventEmitter {
       log(`[WebcamManager] Starting stream for: ${deviceId}, input: ${inputResolution}@${inputFps}fps, mode: ${outputMode}`);
 
       // FFmpeg command: capture at native resolution, apply output filters
-      // -video_size and -vcodec must come BEFORE -i to set the capture format from the camera
+      // Input format flags must come BEFORE -i to set the capture format from the camera
       // Force MJPEG input when available to prevent H.264 software decode (which can saturate CPU)
+      const isWindows = process.platform === 'win32';
       const inputFormat = nativeMode?.pixelFormat;
+      const mjpegArgs = inputFormat === 'mjpeg'
+        ? (isWindows ? ['-vcodec', 'mjpeg'] : ['-input_format', 'mjpeg'])
+        : [];
       const args: string[] = [
         '-fflags', 'nobuffer',
         '-probesize', '32',
         '-analyzeduration', '0',
-        '-f', 'dshow',
-        ...(inputFormat === 'mjpeg' ? ['-vcodec', 'mjpeg'] : []),
+        '-f', isWindows ? 'dshow' : 'v4l2',
+        ...mjpegArgs,
         '-video_size', inputResolution,
         '-framerate', String(inputFps),
-        '-i', `video=${deviceId}`,
+        '-i', isWindows ? `video=${deviceId}` : deviceId,
       ];
 
       // Add scale filter for grid mode: half native resolution

@@ -3,15 +3,27 @@
  *
  * Tests device listing, stream management, JPEG parsing, and event emission.
  * Uses mocked Bun.spawn to avoid actual FFmpeg process spawning.
+ * Tests both Linux (v4l2) and Windows (DirectShow) code paths.
  */
 
-import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { WebcamManager } from '../../server/webcam-manager';
 import type { DeviceMode } from '../../server/webcam-manager';
 import { createMockJpegFrame, captureEvents, encodeString } from './test-utils';
 
-// Store original Bun.spawn
+// Store original Bun.spawn and process.platform
 const originalBunSpawn = Bun.spawn;
+const originalPlatform = process.platform;
+
+/** Sets process.platform for testing. */
+function setPlatform(platform: string) {
+  Object.defineProperty(process, 'platform', { value: platform, writable: true, configurable: true });
+}
+
+/** Restores process.platform to its original value. */
+function restorePlatform() {
+  Object.defineProperty(process, 'platform', { value: originalPlatform, writable: true, configurable: true });
+}
 
 /** Creates a mock Bun.spawn that returns a fake FFmpeg process. */
 function createMockSpawn(opts?: { captureArgs?: boolean; stderrText?: string }) {
@@ -49,8 +61,9 @@ describe('WebcamManager', () => {
   });
 
   afterEach(() => {
-    // Restore original Bun.spawn
+    // Restore original Bun.spawn and platform
     (globalThis as { Bun: typeof Bun }).Bun.spawn = originalBunSpawn;
+    restorePlatform();
     manager.stopAllStreams();
   });
 
@@ -291,8 +304,12 @@ describe('WebcamManager', () => {
     });
   });
 
-  describe('listDevices', () => {
-    test('parses video devices from FFmpeg output', async () => {
+  describe('listDevices (Windows)', () => {
+    beforeEach(() => {
+      setPlatform('win32');
+    });
+
+    test('parses video devices from FFmpeg DirectShow output', async () => {
       const mockDeviceListStderr = `
 [dshow @ 00000123] DirectShow video devices
 [dshow @ 00000123]  "Integrated Webcam" (video)
@@ -405,7 +422,294 @@ describe('WebcamManager', () => {
     });
   });
 
-  describe('startStream', () => {
+  describe('listDevices (Linux)', () => {
+    beforeEach(() => {
+      setPlatform('linux');
+    });
+
+    /** Mocks the private listVideoDeviceNodes method to return given paths. */
+    function mockVideoNodes(paths: string[]) {
+      (manager as unknown as { listVideoDeviceNodes: () => Promise<string[]> }).listVideoDeviceNodes =
+        async () => paths;
+    }
+
+    test('parses video devices from /dev/video* and v4l2-ctl', async () => {
+      // v4l2-ctl --info output for a capture device
+      const v4l2InfoCapture = `Driver Info:
+	Driver name      : uvcvideo
+	Card type        : HD Pro Webcam C920
+	Bus info         : usb-0000:00:14.0-1
+	Driver version   : 6.1.0
+	Capabilities     : 0x84A00001
+		Video Capture
+		Metadata Capture
+		Streaming
+		Extended Pix Format
+		Device Capabilities
+	Device Caps      : 0x04200001
+		Video Capture
+		Streaming
+		Extended Pix Format
+`;
+      // v4l2-ctl --info output for a metadata device (should be filtered out)
+      const v4l2InfoMetadata = `Driver Info:
+	Driver name      : uvcvideo
+	Card type        : HD Pro Webcam C920
+	Bus info         : usb-0000:00:14.0-1
+	Capabilities     : 0x84A00001
+	Device Caps      : 0x04A00000
+		Metadata Capture
+`;
+      const v4l2CapabilitiesStderr = `[video4linux2,v4l2 @ 0x1234] Compressed:       mjpeg :          Motion-JPEG : 1920x1080 1280x720 640x480
+[video4linux2,v4l2 @ 0x1234] Raw       :     yuyv422 :           YUYV 4:2:2 : 640x480 320x240
+`;
+
+      let spawnCallCount = 0;
+      const mockSpawn = mock((args: string[]) => {
+        spawnCallCount++;
+        const cmd = args[0];
+
+        if (cmd === 'v4l2-ctl') {
+          // Determine which device is being queried
+          const deviceArg = args.find(a => a.startsWith('--device='));
+          const isVideo0 = deviceArg?.includes('video0');
+          const stdout = isVideo0 ? v4l2InfoCapture : v4l2InfoMetadata;
+          return {
+            stdout: new ReadableStream({
+              start(c) { c.enqueue(encodeString(stdout)); c.close(); }
+            }),
+            stderr: new ReadableStream({ start(c) { c.close(); } }),
+            exited: Promise.resolve(0)
+          };
+        }
+
+        // FFmpeg capability query
+        return {
+          stdout: new ReadableStream({ start(c) { c.close(); } }),
+          stderr: new ReadableStream({
+            start(c) { c.enqueue(encodeString(v4l2CapabilitiesStderr)); c.close(); }
+          }),
+          exited: Promise.resolve(1)
+        };
+      });
+
+      (globalThis as { Bun: typeof Bun }).Bun.spawn = mockSpawn as typeof Bun.spawn;
+
+      // Mock device node listing to return two video devices
+      mockVideoNodes(['/dev/video0', '/dev/video1']);
+
+      const devices = await manager.listDevices();
+
+      // video0 is capture, video1 is metadata — only video0 should appear
+      expect(devices.length).toBe(1);
+      expect(devices[0].id).toBe('/dev/video0');
+      expect(devices[0].name).toBe('HD Pro Webcam C920');
+      expect(devices[0].type).toBe('video');
+      expect(devices[0].capabilities).toBeDefined();
+      expect(devices[0].capabilities!.length).toBe(5); // 3 mjpeg + 2 yuyv422
+      expect(devices[0].nativeMode).toEqual({ width: 1920, height: 1080, fps: 30, pixelFormat: 'mjpeg' });
+    });
+
+    test('returns empty array when no /dev/video* devices exist', async () => {
+      mockVideoNodes([]);
+
+      const devices = await manager.listDevices();
+      expect(devices).toEqual([]);
+    });
+
+    test('emits error event when device enumeration throws', async () => {
+      (manager as unknown as { listVideoDeviceNodes: () => Promise<string[]> }).listVideoDeviceNodes =
+        async () => { throw new Error('Permission denied'); };
+
+      const { events } = captureEvents<{ type: string; error: string }>(manager, 'error');
+
+      const devices = await manager.listDevices();
+      expect(devices).toEqual([]);
+      expect(events.length).toBe(1);
+      expect(events[0].type).toBe('list-error');
+    });
+
+    test('skips device and logs when v4l2-ctl is not installed', async () => {
+      mockVideoNodes(['/dev/video0']);
+
+      const mockSpawn = mock(() => {
+        throw new Error('Executable not found in $PATH: "v4l2-ctl"');
+      });
+      (globalThis as { Bun: typeof Bun }).Bun.spawn = mockSpawn as typeof Bun.spawn;
+
+      const devices = await manager.listDevices();
+      // Should return empty — the device was skipped because v4l2-ctl wasn't found
+      expect(devices).toEqual([]);
+    });
+  });
+
+  describe('queryDeviceCapabilities (Linux)', () => {
+    let queryCapabilitiesLinux: (deviceId: string) => Promise<DeviceMode[]>;
+
+    beforeEach(() => {
+      setPlatform('linux');
+      queryCapabilitiesLinux = (manager as unknown as {
+        queryCapabilitiesLinux: (deviceId: string) => Promise<DeviceMode[]>
+      }).queryCapabilitiesLinux.bind(manager);
+    });
+
+    test('parses v4l2 compressed and raw formats', async () => {
+      const stderr = `[video4linux2,v4l2 @ 0x5555] Compressed:       mjpeg :          Motion-JPEG : 640x480 1920x1080 1280x720
+[video4linux2,v4l2 @ 0x5555] Raw       :     yuyv422 :           YUYV 4:2:2 : 640x480 320x240
+`;
+      installMockSpawn({ stderrText: stderr });
+
+      const modes = await queryCapabilitiesLinux('/dev/video0');
+
+      expect(modes.length).toBe(5);
+      // MJPEG modes
+      expect(modes[0]).toEqual({ pixelFormat: 'mjpeg', width: 640, height: 480, maxFps: 30 });
+      expect(modes[1]).toEqual({ pixelFormat: 'mjpeg', width: 1920, height: 1080, maxFps: 30 });
+      expect(modes[2]).toEqual({ pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 });
+      // YUYV modes
+      expect(modes[3]).toEqual({ pixelFormat: 'yuyv422', width: 640, height: 480, maxFps: 30 });
+      expect(modes[4]).toEqual({ pixelFormat: 'yuyv422', width: 320, height: 240, maxFps: 30 });
+    });
+
+    test('returns empty array for unrecognized output', async () => {
+      installMockSpawn({ stderrText: 'some random ffmpeg output\n' });
+
+      const modes = await queryCapabilitiesLinux('/dev/video0');
+      expect(modes).toEqual([]);
+    });
+
+    test('spawns FFmpeg with v4l2 flags', async () => {
+      const { fn, getCapturedArgs } = installMockSpawn({ captureArgs: true });
+
+      await queryCapabilitiesLinux('/dev/video0');
+
+      expect(fn).toHaveBeenCalled();
+      const args = getCapturedArgs();
+      expect(args).toContain('-f');
+      expect(args).toContain('v4l2');
+      expect(args).toContain('-list_formats');
+      expect(args).toContain('all');
+      expect(args).toContain('/dev/video0');
+    });
+  });
+
+  describe('queryDeviceCapabilities (Windows)', () => {
+    let queryCapabilitiesWindows: (deviceId: string) => Promise<DeviceMode[]>;
+
+    beforeEach(() => {
+      setPlatform('win32');
+      queryCapabilitiesWindows = (manager as unknown as {
+        queryCapabilitiesWindows: (deviceId: string) => Promise<DeviceMode[]>
+      }).queryCapabilitiesWindows.bind(manager);
+    });
+
+    test('parses DirectShow capability output', async () => {
+      const stderr = `[dshow @ 00000456] DirectShow video device options (from video pin)
+[dshow @ 00000456]   vcodec=mjpeg  min s=1280x720 fps=5 max s=1280x720 fps=30
+[dshow @ 00000456]   pixel_format=yuyv422  min s=640x480 fps=5 max s=640x480 fps=15
+`;
+      installMockSpawn({ stderrText: stderr });
+
+      const modes = await queryCapabilitiesWindows('Integrated Webcam');
+
+      expect(modes.length).toBe(2);
+      expect(modes[0]).toEqual({ pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 });
+      expect(modes[1]).toEqual({ pixelFormat: 'yuyv422', width: 640, height: 480, maxFps: 15 });
+    });
+
+    test('spawns FFmpeg with dshow flags', async () => {
+      const { fn, getCapturedArgs } = installMockSpawn({ captureArgs: true });
+
+      await queryCapabilitiesWindows('My Webcam');
+
+      expect(fn).toHaveBeenCalled();
+      const args = getCapturedArgs();
+      expect(args).toContain('-f');
+      expect(args).toContain('dshow');
+      expect(args).toContain('-list_options');
+      expect(args).toContain('true');
+      expect(args).toContain('video=My Webcam');
+    });
+  });
+
+  describe('startStream (Linux)', () => {
+    beforeEach(() => {
+      setPlatform('linux');
+    });
+
+    test('spawns FFmpeg with v4l2 format and -input_format for MJPEG', async () => {
+      const caps = (manager as unknown as { deviceCapabilities: Map<string, unknown> }).deviceCapabilities;
+      caps.set('/dev/video0', {
+        capabilities: [{ pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 }],
+        nativeMode: { width: 1280, height: 720, fps: 30, pixelFormat: 'mjpeg' }
+      });
+
+      const { fn, getCapturedArgs } = installMockSpawn({ captureArgs: true });
+
+      const result = await manager.startStream('/dev/video0', 'grid');
+
+      expect(result).toBe(true);
+      expect(fn).toHaveBeenCalled();
+      const args = getCapturedArgs();
+      // Should use v4l2 format
+      expect(args).toContain('-f');
+      expect(args).toContain('v4l2');
+      // Should use -input_format instead of -vcodec on Linux
+      expect(args).toContain('-input_format');
+      expect(args).toContain('mjpeg');
+      expect(args).not.toContain('-vcodec');
+      // Device path used directly (not video=...)
+      expect(args).toContain('/dev/video0');
+      expect(args).not.toContain('video=/dev/video0');
+      // Grid mode scale filter
+      expect(args).toContain('-vf');
+      expect(args).toContain('scale=640:360');
+      expect(args).toContain('-r');
+      expect(args).toContain('15');
+    });
+
+    test('spawns FFmpeg in fullscreen mode without scale filter', async () => {
+      const caps = (manager as unknown as { deviceCapabilities: Map<string, unknown> }).deviceCapabilities;
+      caps.set('/dev/video0', {
+        capabilities: [{ pixelFormat: 'mjpeg', width: 1920, height: 1080, maxFps: 30 }],
+        nativeMode: { width: 1920, height: 1080, fps: 30, pixelFormat: 'mjpeg' }
+      });
+
+      const { getCapturedArgs } = installMockSpawn({ captureArgs: true });
+
+      await manager.startStream('/dev/video0', 'fullscreen');
+
+      const args = getCapturedArgs();
+      expect(args).toContain('-f');
+      expect(args).toContain('v4l2');
+      expect(args).toContain('-input_format');
+      expect(args).not.toContain('-vf');
+      expect(args).toContain('-r');
+      expect(args).toContain('30');
+    });
+
+    test('omits -input_format when pixel format is not MJPEG', async () => {
+      const caps = (manager as unknown as { deviceCapabilities: Map<string, unknown> }).deviceCapabilities;
+      caps.set('/dev/video0', {
+        capabilities: [{ pixelFormat: 'yuyv422', width: 640, height: 480, maxFps: 30 }],
+        nativeMode: { width: 640, height: 480, fps: 30, pixelFormat: 'yuyv422' }
+      });
+
+      const { getCapturedArgs } = installMockSpawn({ captureArgs: true });
+
+      await manager.startStream('/dev/video0', 'grid');
+
+      const args = getCapturedArgs();
+      expect(args).not.toContain('-input_format');
+      expect(args).not.toContain('-vcodec');
+    });
+  });
+
+  describe('startStream (Windows)', () => {
+    beforeEach(() => {
+      setPlatform('win32');
+    });
+
     test('returns true if already streaming same device', async () => {
       const activeStreams = (manager as unknown as { activeStreams: Map<string, unknown> }).activeStreams;
       activeStreams.set('test-device', { deviceId: 'test-device' });
@@ -415,7 +719,6 @@ describe('WebcamManager', () => {
     });
 
     test('spawns FFmpeg with native resolution and grid mode output filter', async () => {
-      // Pre-populate device capabilities
       const caps = (manager as unknown as { deviceCapabilities: Map<string, unknown> }).deviceCapabilities;
       caps.set('My Webcam', {
         capabilities: [{ pixelFormat: 'mjpeg', width: 1280, height: 720, maxFps: 30 }],
@@ -505,7 +808,9 @@ describe('WebcamManager', () => {
       // Should NOT force vcodec when no capabilities are known
       expect(args).not.toContain('-vcodec');
     });
+  });
 
+  describe('startStream (common)', () => {
     test('includes low-latency FFmpeg flags', async () => {
       const { getCapturedArgs } = installMockSpawn({ captureArgs: true });
 

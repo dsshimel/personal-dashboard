@@ -107,7 +107,9 @@ wss.on('connection', (ws) => {
 
       switch (message.type) {
         case 'webcam-list': {
+          log(`[WebcamServer] Device list requested (platform: ${process.platform})`);
           const devices = await webcamManager.listDevices();
+          log(`[WebcamServer] Found ${devices.length} device(s): ${devices.map(d => `${d.id} (${d.name})`).join(', ') || 'none'}`);
           ws.send(JSON.stringify({ type: 'webcam-devices', devices }));
           break;
         }
