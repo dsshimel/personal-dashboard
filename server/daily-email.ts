@@ -301,7 +301,7 @@ export type BriefingProgressCallback = (step: string) => void;
 export async function generateBriefingPreview(onProgress?: BriefingProgressCallback): Promise<DailyBriefing> {
   onProgress?.('Loading todos and recitations...');
   const todos = listTodos().filter(t => !t.done);
-  const recitations = listRecitations();
+  const recitations = listRecitations().filter(r => !r.done);
   const prompt = getBriefingPrompt();
 
   // Fetch weather data (non-fatal if it fails or is unconfigured)

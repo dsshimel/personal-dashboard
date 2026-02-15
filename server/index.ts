@@ -663,8 +663,8 @@ app.post('/recitations', (req, res) => {
 
 app.put('/recitations/:id', (req, res) => {
   try {
-    const { title, content } = req.body;
-    const recitation = updateRecitation(req.params.id, { title, content });
+    const { title, content, done } = req.body;
+    const recitation = updateRecitation(req.params.id, { title, content, done });
     console.log(`Recitation updated: ${recitation.title}`);
     res.json(recitation);
   } catch (error) {

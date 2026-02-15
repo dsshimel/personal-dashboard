@@ -14,6 +14,7 @@ export interface Recitation {
   id: string;
   title: string;
   content: string | null;
+  done: boolean;
   createdAt: string;
 }
 
@@ -22,6 +23,7 @@ interface RecitationRow {
   id: string;
   title: string;
   content: string | null;
+  done: number;
   created_at: string;
 }
 
@@ -39,6 +41,13 @@ export function initRecitationsDb(db: Database): void {
       created_at TEXT NOT NULL
     )
   `);
+
+  // Migration: add done column if it doesn't exist
+  const columns = db.prepare("PRAGMA table_info(recitations)").all() as Array<{ name: string }>;
+  const hasDone = columns.some(c => c.name === 'done');
+  if (!hasDone) {
+    db.run('ALTER TABLE recitations ADD COLUMN done INTEGER NOT NULL DEFAULT 0');
+  }
 }
 
 /** Converts a RecitationRow to a Recitation. */
@@ -47,6 +56,7 @@ function rowToRecitation(row: RecitationRow): Recitation {
     id: row.id,
     title: row.title,
     content: row.content,
+    done: row.done === 1,
     createdAt: row.created_at,
   };
 }
@@ -57,7 +67,7 @@ function rowToRecitation(row: RecitationRow): Recitation {
 export function listRecitations(): Recitation[] {
   const db = getDb();
   const rows = db.prepare(
-    'SELECT * FROM recitations ORDER BY created_at DESC'
+    'SELECT * FROM recitations ORDER BY done ASC, created_at DESC'
   ).all() as RecitationRow[];
 
   return rows.map(rowToRecitation);
@@ -87,14 +97,15 @@ export function createRecitation(data: { title: string; content?: string }): Rec
   const now = new Date().toISOString();
 
   db.prepare(`
-    INSERT INTO recitations (id, title, content, created_at)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO recitations (id, title, content, done, created_at)
+    VALUES (?, ?, ?, 0, ?)
   `).run(id, data.title, data.content ?? null, now);
 
   return {
     id,
     title: data.title,
     content: data.content ?? null,
+    done: false,
     createdAt: now,
   };
 }
@@ -107,7 +118,7 @@ export function createRecitation(data: { title: string; content?: string }): Rec
  * @returns The updated recitation.
  * @throws If the recitation is not found.
  */
-export function updateRecitation(id: string, data: { title?: string; content?: string | null }): Recitation {
+export function updateRecitation(id: string, data: { title?: string; content?: string | null; done?: boolean }): Recitation {
   const db = getDb();
   const existing = getRecitation(id);
   if (!existing) {
@@ -116,10 +127,11 @@ export function updateRecitation(id: string, data: { title?: string; content?: s
 
   const title = data.title !== undefined ? data.title : existing.title;
   const content = data.content !== undefined ? data.content : existing.content;
+  const done = data.done !== undefined ? data.done : existing.done;
 
-  db.prepare('UPDATE recitations SET title = ?, content = ? WHERE id = ?').run(title, content, id);
+  db.prepare('UPDATE recitations SET title = ?, content = ?, done = ? WHERE id = ?').run(title, content, done ? 1 : 0, id);
 
-  return { ...existing, title, content };
+  return { ...existing, title, content, done };
 }
 
 /**

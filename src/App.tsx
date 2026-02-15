@@ -226,6 +226,7 @@ interface RecitationItem {
   id: string
   title: string
   content: string | null
+  done: boolean
   createdAt: string
 }
 
@@ -337,6 +338,7 @@ function App() {
   const [editRecitationTitle, setEditRecitationTitle] = useState('')
   const [editRecitationContent, setEditRecitationContent] = useState('')
   const [loadingRecitations, setLoadingRecitations] = useState(false)
+  const [showArchivedRecitations, setShowArchivedRecitations] = useState(false)
 
   // Research state
   const [topics, setTopics] = useState<ResearchTopic[]>([])
@@ -1055,6 +1057,23 @@ function App() {
     setEditRecitationTitle('')
     setEditRecitationContent('')
   }, [])
+
+  /** Toggles a recitation's done status. */
+  const handleToggleRecitationDone = useCallback(async (id: string, done: boolean) => {
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/recitations/${id}`
+      const response = await fetch(apiUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ done }),
+      })
+      if (response.ok) {
+        fetchRecitations()
+      }
+    } catch (error) {
+      console.error('Failed to toggle recitation done:', error)
+    }
+  }, [fetchRecitations])
 
   // --- Research data fetching ---
 
@@ -3132,9 +3151,9 @@ function App() {
             </div>
           )}
 
-          {recitations.length > 0 && (
+          {recitations.filter(r => !r.done).length > 0 && (
             <div className="recitations-list">
-              {recitations.map(recitation => (
+              {recitations.filter(r => !r.done).map(recitation => (
                 <div key={recitation.id} className="recitation-item">
                   {editingRecitation?.id === recitation.id ? (
                     <div className="recitation-edit-form">
@@ -3171,6 +3190,13 @@ function App() {
                       )}
                       <div className="recitation-actions">
                         <button
+                          className="recitation-done-button"
+                          onClick={() => handleToggleRecitationDone(recitation.id, true)}
+                          title="Archive recitation"
+                        >
+                          Done
+                        </button>
+                        <button
                           className="recitation-edit-button"
                           onClick={() => handleStartEditRecitation(recitation)}
                           title="Edit recitation"
@@ -3190,6 +3216,83 @@ function App() {
                 </div>
               ))}
             </div>
+          )}
+
+          {recitations.filter(r => r.done).length > 0 && (
+            <>
+              <div
+                className="recitations-archived-header"
+                onClick={() => setShowArchivedRecitations(!showArchivedRecitations)}
+              >
+                <span>{showArchivedRecitations ? '▾' : '▸'} Archived ({recitations.filter(r => r.done).length})</span>
+              </div>
+              {showArchivedRecitations && (
+                <div className="recitations-list">
+                  {recitations.filter(r => r.done).map(recitation => (
+                    <div key={recitation.id} className="recitation-item recitation-done">
+                      {editingRecitation?.id === recitation.id ? (
+                        <div className="recitation-edit-form">
+                          <input
+                            className="recitations-input"
+                            type="text"
+                            value={editRecitationTitle}
+                            onChange={e => setEditRecitationTitle(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleUpdateRecitation()}
+                          />
+                          <textarea
+                            className="recitations-textarea"
+                            value={editRecitationContent}
+                            onChange={e => setEditRecitationContent(e.target.value)}
+                            rows={4}
+                          />
+                          <div className="recitation-edit-actions">
+                            <button className="recitations-save-button" onClick={handleUpdateRecitation} disabled={!editRecitationTitle.trim()}>
+                              Save
+                            </button>
+                            <button className="recitations-cancel-button" onClick={handleCancelEditRecitation}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="recitation-item-header">
+                            <span className="recitation-title">{recitation.title}</span>
+                            <span className="recitation-date">{formatDate(recitation.createdAt)}</span>
+                          </div>
+                          {recitation.content && (
+                            <div className="recitation-content">{recitation.content}</div>
+                          )}
+                          <div className="recitation-actions">
+                            <button
+                              className="recitation-done-button"
+                              onClick={() => handleToggleRecitationDone(recitation.id, false)}
+                              title="Restore recitation"
+                            >
+                              Undo
+                            </button>
+                            <button
+                              className="recitation-edit-button"
+                              onClick={() => handleStartEditRecitation(recitation)}
+                              title="Edit recitation"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              className="recitation-delete-button"
+                              onClick={() => handleDeleteRecitation(recitation.id)}
+                              title="Delete recitation"
+                            >
+                              &times;
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
 
