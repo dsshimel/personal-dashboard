@@ -132,7 +132,7 @@ type Section = 'briefing' | 'crm' | 'diagnostics' | 'feature-flags' | 'hardware'
 type TerminalTab = 'terminal' | 'projects' | 'conversations'
 type HardwareTab = 'webcams'
 type DiagnosticsTab = 'logs' | 'client-perf' | 'server-perf'
-type CrmTab = 'contacts'
+type CrmTab = 'contacts' | 'google-contacts'
 type TodoTab = 'todos'
 type BriefingTab = 'briefing-editor'
 type RecitationsTab = 'recitations-editor'
@@ -143,7 +143,7 @@ type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | Br
 // Keep alphabetized by section key
 const SECTION_TABS: Record<Section, SubTab[]> = {
   briefing: ['briefing-editor'],
-  crm: ['contacts'],
+  crm: ['contacts', 'google-contacts'],
   diagnostics: ['logs', 'client-perf', 'server-perf'],
   'feature-flags': ['flags'],
   hardware: ['webcams'],
@@ -157,6 +157,7 @@ const SECTION_TABS: Record<Section, SubTab[]> = {
 const SUB_TAB_LABELS: Record<SubTab, string> = {
   'client-perf': 'Client Performance',
   contacts: 'Contacts',
+  'google-contacts': 'Google Contacts',
   conversations: 'Conversations',
   flags: 'Flags',
   'briefing-editor': 'Prompt Editor',
@@ -211,6 +212,16 @@ interface CrmInteraction {
   note: string
   occurredAt: string
   createdAt: string
+}
+
+/** A Google Contact from the People API. */
+interface GoogleContact {
+  resourceName: string
+  name: string
+  email: string | null
+  phone: string | null
+  organization: string | null
+  photoUrl: string | null
 }
 
 /** Represents a todo item. */
@@ -320,6 +331,16 @@ function App() {
   const [newContactSocial, setNewContactSocial] = useState('')
   const [newInteractionNote, setNewInteractionNote] = useState('')
   const [newInteractionDate, setNewInteractionDate] = useState(() => new Date().toISOString().split('T')[0])
+
+  // Google Contacts state
+  const [googleAuthStatus, setGoogleAuthStatus] = useState<{ configured: boolean; authenticated: boolean }>({ configured: false, authenticated: false })
+  const [googleContacts, setGoogleContacts] = useState<GoogleContact[]>([])
+  const [googleContactsSearch, setGoogleContactsSearch] = useState('')
+  const [loadingGoogleContacts, setLoadingGoogleContacts] = useState(false)
+  const [randomGoogleContacts, setRandomGoogleContacts] = useState<GoogleContact[]>([])
+  const [loadingRandomContacts, setLoadingRandomContacts] = useState(false)
+  const [importingContacts, setImportingContacts] = useState<Set<string>>(new Set())
+  const [recentlyImported, setRecentlyImported] = useState<Set<string>>(new Set())
 
   // Feature flags state
   const [featureFlags, setFeatureFlags] = useState<FeatureFlag[]>([])
@@ -1482,6 +1503,128 @@ function App() {
     setNewContactSocial('')
   }, [])
 
+  // --- Google Contacts callbacks ---
+
+  const fetchGoogleAuthStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/google/auth/status`)
+      if (res.ok) setGoogleAuthStatus(await res.json())
+    } catch (error) {
+      console.error('Failed to fetch Google auth status:', error)
+    }
+  }, [])
+
+  const fetchAllGoogleContacts = useCallback(async () => {
+    setLoadingGoogleContacts(true)
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/google/contacts`)
+      if (res.ok) {
+        setGoogleContacts(await res.json())
+      } else if (res.status === 401) {
+        setGoogleAuthStatus(prev => ({ ...prev, authenticated: false }))
+      }
+    } catch (error) {
+      console.error('Failed to fetch Google contacts:', error)
+    } finally {
+      setLoadingGoogleContacts(false)
+    }
+  }, [])
+
+  const fetchRandomGoogleContacts = useCallback(async () => {
+    setLoadingRandomContacts(true)
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/google/contacts/random`)
+      if (res.ok) setRandomGoogleContacts(await res.json())
+    } catch (error) {
+      console.error('Failed to fetch random Google contacts:', error)
+    } finally {
+      setLoadingRandomContacts(false)
+    }
+  }, [])
+
+  const handleGoogleConnect = useCallback(async () => {
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/google/auth/url`)
+      if (res.ok) {
+        const { url } = await res.json()
+        window.location.href = url
+      }
+    } catch (error) {
+      console.error('Failed to get Google auth URL:', error)
+    }
+  }, [])
+
+  const handleGoogleDisconnect = useCallback(async () => {
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/google/auth/disconnect`, { method: 'POST' })
+      if (res.ok) {
+        setGoogleAuthStatus({ configured: true, authenticated: false })
+        setGoogleContacts([])
+        setRandomGoogleContacts([])
+        setRecentlyImported(new Set())
+      } else {
+        console.error('Failed to disconnect Google:', res.status)
+      }
+    } catch (error) {
+      console.error('Failed to disconnect Google:', error)
+    }
+  }, [])
+
+  const handleImportGoogleContact = useCallback(async (contact: GoogleContact) => {
+    setImportingContacts(prev => new Set(prev).add(contact.resourceName))
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/crm/contacts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: contact.name,
+          email: contact.email,
+          phone: contact.phone,
+        }),
+      })
+      if (res.ok) {
+        setRecentlyImported(prev => new Set(prev).add(contact.resourceName))
+        fetchContacts()
+      } else {
+        console.error('Failed to import contact:', res.status, await res.text())
+      }
+    } catch (error) {
+      console.error('Failed to import Google contact:', error)
+    } finally {
+      setImportingContacts(prev => {
+        const next = new Set(prev)
+        next.delete(contact.resourceName)
+        return next
+      })
+    }
+  }, [fetchContacts])
+
+  const filteredGoogleContacts = useMemo(() => {
+    if (!googleContactsSearch.trim()) return googleContacts
+    const q = googleContactsSearch.toLowerCase()
+    return googleContacts.filter(c =>
+      c.name.toLowerCase().includes(q) ||
+      c.email?.toLowerCase().includes(q) ||
+      c.phone?.toLowerCase().includes(q) ||
+      c.organization?.toLowerCase().includes(q)
+    )
+  }, [googleContacts, googleContactsSearch])
+
+  /** Set of CRM contact emails for duplicate detection when importing Google contacts. */
+  const crmEmails = useMemo(() => {
+    const emails = new Set<string>()
+    for (const c of crmContacts) {
+      if (c.email) emails.add(c.email.toLowerCase())
+    }
+    return emails
+  }, [crmContacts])
+
+  const isGoogleContactImported = useCallback((contact: GoogleContact): boolean => {
+    if (recentlyImported.has(contact.resourceName)) return true
+    if (contact.email && crmEmails.has(contact.email.toLowerCase())) return true
+    return false
+  }, [recentlyImported, crmEmails])
+
   /** Returns staleness level based on last interaction date. */
   const getStaleness = useCallback((lastInteraction: string | null): 'fresh' | 'stale' | 'very-stale' => {
     if (!lastInteraction) return 'very-stale'
@@ -1706,6 +1849,39 @@ function App() {
       fetchContacts()
     }
   }, [activeSubTab, fetchContacts])
+
+  // Fetch Google Contacts data when the tab is active
+  useEffect(() => {
+    if (activeSubTab === 'google-contacts') {
+      fetchGoogleAuthStatus()
+    }
+  }, [activeSubTab, fetchGoogleAuthStatus])
+
+  useEffect(() => {
+    if (activeSubTab === 'google-contacts' && googleAuthStatus.authenticated) {
+      fetchAllGoogleContacts()
+      fetchRandomGoogleContacts()
+    }
+  }, [activeSubTab, googleAuthStatus.authenticated, fetchAllGoogleContacts, fetchRandomGoogleContacts])
+
+  // Handle Google OAuth callback redirect
+  const [googleAuthError, setGoogleAuthError] = useState<string | null>(null)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const authResult = params.get('google_auth')
+    if (authResult) {
+      // Clean URL
+      const url = new URL(window.location.href)
+      url.searchParams.delete('google_auth')
+      window.history.replaceState({}, '', url.toString())
+      if (authResult === 'error') {
+        setGoogleAuthError('Failed to connect Google account. Please try again.')
+      } else {
+        setGoogleAuthError(null)
+      }
+      fetchGoogleAuthStatus()
+    }
+  }, [fetchGoogleAuthStatus])
 
   // Keep selectedContact in sync with the contacts list (e.g. after interaction count changes)
   useEffect(() => {
@@ -3621,6 +3797,125 @@ function App() {
                   ))}
                 </div>
               )}
+            </>
+          )}
+        </div>
+
+        {/* Google Contacts - always mounted, hidden when inactive */}
+        <div className={`google-contacts-container ${activeSubTab !== 'google-contacts' ? 'tab-hidden' : ''}`}>
+          {!googleAuthStatus.configured ? (
+            <div className="google-auth-prompt">
+              <h3>Google Contacts</h3>
+              <p>Google Contacts integration is not configured.</p>
+              <p className="google-auth-hint">
+                Set <code>GOOGLE_PEOPLE_API_CLIENT_ID</code> and <code>GOOGLE_PEOPLE_API_CLIENT_SECRET</code> in your <code>.env</code> file, then restart the server.
+              </p>
+            </div>
+          ) : !googleAuthStatus.authenticated ? (
+            <div className="google-auth-prompt">
+              <h3>Google Contacts</h3>
+              {googleAuthError && <p className="google-auth-error">{googleAuthError}</p>}
+              <p>Connect your Google account to browse and import contacts.</p>
+              <p className="google-auth-hint">Read-only access — we only view your contacts, never modify them.</p>
+              <button className="google-connect-button" onClick={handleGoogleConnect}>
+                Connect Google Account
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Reconnect section */}
+              <div className="google-reconnect-section">
+                <div className="google-reconnect-header">
+                  <h3>Reconnect With</h3>
+                  <button
+                    className="google-shuffle-button"
+                    onClick={fetchRandomGoogleContacts}
+                    disabled={loadingRandomContacts}
+                    title="Shuffle — show 5 different contacts"
+                  >
+                    {loadingRandomContacts ? '...' : 'Shuffle'}
+                  </button>
+                </div>
+                <div className="google-reconnect-cards">
+                  {randomGoogleContacts.map(contact => (
+                    <div key={contact.resourceName} className="google-contact-card google-reconnect-card">
+                      {contact.photoUrl ? (
+                        <img className="google-contact-photo" src={contact.photoUrl} alt="" referrerPolicy="no-referrer" />
+                      ) : (
+                        <div className="google-contact-avatar">{contact.name.charAt(0).toUpperCase()}</div>
+                      )}
+                      <div className="google-contact-info">
+                        <div className="google-contact-name">{contact.name}</div>
+                        {contact.organization && <div className="google-contact-org">{contact.organization}</div>}
+                        {contact.email && <div className="google-contact-email">{contact.email}</div>}
+                      </div>
+                      <button
+                        className="google-import-button"
+                        onClick={() => handleImportGoogleContact(contact)}
+                        disabled={importingContacts.has(contact.resourceName) || isGoogleContactImported(contact)}
+                        title={isGoogleContactImported(contact) ? 'Already imported' : 'Import to CRM'}
+                      >
+                        {importingContacts.has(contact.resourceName) ? '...' : isGoogleContactImported(contact) ? 'Imported' : 'Import'}
+                      </button>
+                    </div>
+                  ))}
+                  {!loadingRandomContacts && randomGoogleContacts.length === 0 && (
+                    <div className="welcome-message">No contacts to show.</div>
+                  )}
+                </div>
+              </div>
+
+              {/* All contacts */}
+              <div className="google-all-contacts">
+                <div className="google-contacts-header">
+                  <h3>All Contacts</h3>
+                  <span className="google-contacts-count">
+                    {filteredGoogleContacts.length === googleContacts.length
+                      ? `${googleContacts.length} contacts`
+                      : `${filteredGoogleContacts.length} of ${googleContacts.length}`}
+                  </span>
+                </div>
+                <input
+                  className="google-contacts-search"
+                  type="text"
+                  placeholder="Search contacts..."
+                  value={googleContactsSearch}
+                  onChange={e => setGoogleContactsSearch(e.target.value)}
+                />
+                {loadingGoogleContacts && googleContacts.length === 0 ? (
+                  <div className="welcome-message">Loading Google Contacts...</div>
+                ) : (
+                  <div className="google-contacts-list">
+                    {filteredGoogleContacts.map(contact => (
+                      <div key={contact.resourceName} className="google-contact-card">
+                        {contact.photoUrl ? (
+                          <img className="google-contact-photo" src={contact.photoUrl} alt="" referrerPolicy="no-referrer" />
+                        ) : (
+                          <div className="google-contact-avatar">{contact.name.charAt(0).toUpperCase()}</div>
+                        )}
+                        <div className="google-contact-info">
+                          <div className="google-contact-name">{contact.name}</div>
+                          {contact.organization && <div className="google-contact-org">{contact.organization}</div>}
+                          {contact.email && <div className="google-contact-email">{contact.email}</div>}
+                          {contact.phone && <div className="google-contact-phone">{contact.phone}</div>}
+                        </div>
+                        <button
+                          className="google-import-button"
+                          onClick={() => handleImportGoogleContact(contact)}
+                          disabled={importingContacts.has(contact.resourceName) || isGoogleContactImported(contact)}
+                          title={isGoogleContactImported(contact) ? 'Already imported' : 'Import to CRM'}
+                        >
+                          {importingContacts.has(contact.resourceName) ? '...' : isGoogleContactImported(contact) ? 'Imported' : 'Import'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <button className="google-disconnect-button" onClick={handleGoogleDisconnect}>
+                Disconnect Google Account
+              </button>
             </>
           )}
         </div>

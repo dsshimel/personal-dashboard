@@ -17,6 +17,7 @@ import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBrief
 import { initRecitationsDb, listRecitations, createRecitation, updateRecitation, deleteRecitation } from './recitations.js';
 import { initResearchDb, listTopics, createTopic, updateTopic, deleteTopic, listArticles, deleteArticle, generateResearchArticles } from './research.js';
 import { initFeatureFlagsDb, listFeatureFlags, toggleFeatureFlag } from './feature-flags.js';
+import { initGoogleAuthDb, getGoogleAuthStatus, getGoogleAuthUrl, handleGoogleCallback, clearTokens as clearGoogleTokens, fetchGoogleContacts, getRandomGoogleContacts } from './google-contacts.js';
 import { getWeatherLocation, setWeatherLocation, geocodeLocation, fetchConfiguredWeather } from './weather.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
@@ -36,6 +37,7 @@ initDailyEmailDb(db);
 initRecitationsDb(db);
 initResearchDb(db);
 initFeatureFlagsDb(db);
+initGoogleAuthDb(db);
 
 startDailyEmailScheduler();
 
@@ -429,6 +431,79 @@ app.delete('/crm/interactions/:id', (req, res) => {
   } catch (error) {
     console.error('Error deleting interaction:', error);
     res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to delete interaction' });
+  }
+});
+
+// --- Google Contacts Endpoints ---
+
+const OAUTH_REDIRECT_URI = 'http://localhost:4001/auth/google/callback';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:6969';
+
+// Check if Google API is configured and authenticated
+app.get('/google/auth/status', (_req, res) => {
+  res.json(getGoogleAuthStatus());
+});
+
+// Get the Google OAuth consent URL
+app.get('/google/auth/url', (_req, res) => {
+  const url = getGoogleAuthUrl(OAUTH_REDIRECT_URI);
+  if (!url) {
+    res.status(400).json({ error: 'Google API credentials not configured' });
+    return;
+  }
+  res.json({ url });
+});
+
+// OAuth callback — exchanges code for tokens, redirects to frontend
+app.get('/auth/google/callback', async (req, res) => {
+  const code = Array.isArray(req.query.code) ? req.query.code[0] : req.query.code;
+  if (!code || typeof code !== 'string') {
+    res.status(400).send('Missing authorization code');
+    return;
+  }
+  try {
+    await handleGoogleCallback(code, OAUTH_REDIRECT_URI);
+    res.redirect(`${FRONTEND_URL}/?google_auth=success`);
+  } catch (error) {
+    console.error('Google OAuth callback error:', error);
+    res.redirect(`${FRONTEND_URL}/?google_auth=error`);
+  }
+});
+
+// Disconnect Google account
+app.post('/google/auth/disconnect', (_req, res) => {
+  clearGoogleTokens();
+  console.log('Google account disconnected');
+  res.json({ status: 'ok' });
+});
+
+// List all Google Contacts
+app.get('/google/contacts', async (_req, res) => {
+  try {
+    const contacts = await fetchGoogleContacts(OAUTH_REDIRECT_URI);
+    res.json(contacts);
+  } catch (error: any) {
+    if (error.message?.includes('Not authenticated') || error.message?.includes('authentication expired')) {
+      res.status(401).json({ error: error.message });
+      return;
+    }
+    console.error('Error fetching Google contacts:', error);
+    res.status(500).json({ error: 'Failed to fetch Google contacts' });
+  }
+});
+
+// Get 5 random Google Contacts
+app.get('/google/contacts/random', async (_req, res) => {
+  try {
+    const contacts = await getRandomGoogleContacts(5, OAUTH_REDIRECT_URI);
+    res.json(contacts);
+  } catch (error: any) {
+    if (error.message?.includes('Not authenticated') || error.message?.includes('authentication expired')) {
+      res.status(401).json({ error: error.message });
+      return;
+    }
+    console.error('Error fetching random Google contacts:', error);
+    res.status(500).json({ error: 'Failed to fetch random Google contacts' });
   }
 });
 

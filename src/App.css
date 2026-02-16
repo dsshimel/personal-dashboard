@@ -2138,6 +2138,304 @@
   color: #e0e0e0;
 }
 
+/* ====== Google Contacts ====== */
+
+.google-contacts-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  gap: 16px;
+}
+
+.google-auth-prompt {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  color: #a0a0a0;
+}
+
+.google-auth-prompt h3 {
+  margin: 0;
+  color: #e0e0e0;
+  font-size: 18px;
+}
+
+.google-auth-prompt p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.google-auth-hint {
+  font-size: 13px;
+  color: #888;
+}
+
+.google-auth-error {
+  color: #f87171;
+  font-size: 14px;
+  background: rgba(248, 113, 113, 0.1);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.google-auth-hint code {
+  background: #16213e;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+  color: #a0a0a0;
+}
+
+.google-connect-button {
+  background: #4285f4;
+  color: white;
+  border: none;
+  padding: 10px 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  transition: background 0.2s;
+  margin-top: 8px;
+}
+
+.google-connect-button:hover {
+  background: #3367d6;
+}
+
+/* Reconnect section */
+.google-reconnect-section {
+  background: #16213e;
+  border: 1px solid #2a3f5f;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.google-reconnect-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.google-reconnect-header h3 {
+  margin: 0;
+  color: #e0e0e0;
+  font-size: 15px;
+}
+
+.google-shuffle-button {
+  background: none;
+  border: 1px solid #2a3f5f;
+  color: #a0a0a0;
+  padding: 4px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.google-shuffle-button:hover {
+  border-color: #4285f4;
+  color: #e0e0e0;
+}
+
+.google-shuffle-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.google-reconnect-cards {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+/* Contact card */
+.google-contact-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #1a1a2e;
+  border: 1px solid #2a3f5f;
+  border-radius: 8px;
+  padding: 10px 12px;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.google-contact-card:hover {
+  border-color: #4285f4;
+  background: #1a2744;
+}
+
+.google-reconnect-card {
+  min-width: 160px;
+  max-width: 200px;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 14px 10px;
+}
+
+.google-contact-photo {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.google-reconnect-card .google-contact-photo,
+.google-reconnect-card .google-contact-avatar {
+  width: 48px;
+  height: 48px;
+  font-size: 20px;
+  line-height: 48px;
+  margin-bottom: 4px;
+}
+
+.google-contact-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #2a3f5f;
+  color: #e0e0e0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.google-contact-info {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.google-contact-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e0e0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.google-contact-org,
+.google-contact-email,
+.google-contact-phone {
+  font-size: 12px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.google-import-button {
+  background: none;
+  border: 1px solid #2a3f5f;
+  color: #4285f4;
+  padding: 4px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.google-import-button:hover:not(:disabled) {
+  background: rgba(66, 133, 244, 0.1);
+  border-color: #4285f4;
+}
+
+.google-import-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  color: #888;
+}
+
+/* All contacts section */
+.google-all-contacts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.google-contacts-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.google-contacts-header h3 {
+  margin: 0;
+  color: #e0e0e0;
+  font-size: 15px;
+}
+
+.google-contacts-count {
+  font-size: 12px;
+  color: #888;
+}
+
+.google-contacts-search {
+  background: #1a1a2e;
+  border: 1px solid #2a3f5f;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #e0e0e0;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.google-contacts-search:focus {
+  border-color: #4285f4;
+}
+
+.google-contacts-search::placeholder {
+  color: #666;
+}
+
+.google-contacts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.google-disconnect-button {
+  background: none;
+  border: 1px solid #2a3f5f;
+  color: #888;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: border-color 0.2s, color 0.2s;
+  align-self: center;
+  margin-top: 8px;
+}
+
+.google-disconnect-button:hover {
+  border-color: #f87171;
+  color: #f87171;
+}
+
 /* Touch-friendly CRM controls */
 @media (pointer: coarse) {
   .crm-contact-card {
