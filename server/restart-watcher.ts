@@ -26,7 +26,7 @@ let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 /** Heartbeat configuration. */
 const HEARTBEAT_INTERVAL_MS = 10_000;
 const HEARTBEAT_TIMEOUT_MS = 3_000;
-const HEARTBEAT_GRACE_PERIOD_MS = 15_000;
+const HEARTBEAT_GRACE_PERIOD_MS = 45_000;
 
 /** Endpoints to check for heartbeats. */
 const HEARTBEAT_ENDPOINTS = [
@@ -152,7 +152,7 @@ function restart() {
         execSync(`taskkill /F /T /PID ${appProcess.pid}`, { stdio: 'ignore' });
       } catch { /* ignore */ }
     } else {
-      appProcess.kill('SIGTERM');
+      appProcess.kill('SIGKILL');
     }
     appProcess = null;
   }
@@ -160,10 +160,14 @@ function restart() {
   // Kill any remaining processes on our ports
   killProcessesOnPorts();
 
-  // Wait a moment for ports to be released
+  // Wait for processes to fully exit, then kill ports again to catch
+  // any late-starting processes (e.g. Express starting after its build step)
   setTimeout(() => {
-    startApp();
-  }, 1500);
+    killProcessesOnPorts();
+    setTimeout(() => {
+      startApp();
+    }, 1500);
+  }, 3000);
 }
 
 // Clean up signal file if it exists
