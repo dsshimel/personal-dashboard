@@ -1207,10 +1207,10 @@ wss.on('connection', (ws) => {
             const images = Array.isArray(message.images) && message.images.length > 0
               ? message.images
                   .filter((img: unknown) => img && typeof (img as { data?: unknown }).data === 'string' && typeof (img as { name?: unknown }).name === 'string')
-                  .map((img: { data: string; name: string }) => ({
+                  .map((img: { data: string; name: string; mimeType?: string }) => ({
                     data: img.data,
                     name: img.name,
-                    mimeType: 'image/png',
+                    mimeType: img.mimeType || 'image/png',
                   }))
               : undefined;
 

@@ -53,7 +53,7 @@ Browser
 
 | Message | Direction | Purpose |
 |---------|-----------|---------|
-| `{type: 'command', tabId, content: string}` | client→server | Send prompt to Claude |
+| `{type: 'command', tabId, content: string, images?: [{data, name, mimeType}]}` | client→server | Send prompt to Claude (with optional image attachments) |
 | `{type: 'abort', tabId}` | client→server | Cancel current operation |
 | `{type: 'reset', tabId}` | client→server | Clear session |
 | `{type: 'resume', tabId, sessionId: string}` | client→server | Resume existing session |

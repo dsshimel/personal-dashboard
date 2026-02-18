@@ -20,6 +20,60 @@ let idCounter = 0
 /** Generates a unique message ID combining timestamp and incrementing counter. */
 const generateId = () => `msg-${Date.now()}-${++idCounter}`
 
+/** Max pixels on longest edge before resizing (matches Claude API recommendation). */
+const IMAGE_MAX_DIMENSION = 1568
+
+/**
+ * Resizes an image file if it exceeds IMAGE_MAX_DIMENSION on either edge.
+ * Returns a base64 data URL (JPEG for photos, PNG preserved for screenshots/paste).
+ */
+function resizeImage(file: File): Promise<{ base64: string; dataUrl: string; mimeType: string }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+
+    img.onload = () => {
+      URL.revokeObjectURL(url)
+      const { width, height } = img
+
+      // If already within limits, read as-is
+      if (width <= IMAGE_MAX_DIMENSION && height <= IMAGE_MAX_DIMENSION) {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const dataUrl = reader.result as string
+          resolve({ base64: dataUrl.split(',')[1], dataUrl, mimeType: file.type || 'image/png' })
+        }
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+        return
+      }
+
+      // Scale down preserving aspect ratio
+      const scale = IMAGE_MAX_DIMENSION / Math.max(width, height)
+      const newW = Math.round(width * scale)
+      const newH = Math.round(height * scale)
+
+      const canvas = document.createElement('canvas')
+      canvas.width = newW
+      canvas.height = newH
+      const ctx = canvas.getContext('2d')!
+      ctx.drawImage(img, 0, 0, newW, newH)
+
+      // Use JPEG for photos (smaller), PNG for things that were already PNG
+      const outputType = file.type === 'image/png' ? 'image/png' : 'image/jpeg'
+      const quality = outputType === 'image/jpeg' ? 0.85 : undefined
+      const dataUrl = canvas.toDataURL(outputType, quality)
+      resolve({ base64: dataUrl.split(',')[1], dataUrl, mimeType: outputType })
+    }
+
+    img.onerror = () => {
+      URL.revokeObjectURL(url)
+      reject(new Error('Failed to load image'))
+    }
+    img.src = url
+  })
+}
+
 /** Custom component overrides for ReactMarkdown to open links in new tabs. */
 const markdownComponents: Components = {
   a: ({ href, children, ...props }) => (
@@ -98,6 +152,7 @@ interface PendingImage {
   id: string
   data: string  // base64 data (without data URL prefix)
   name: string  // generated filename
+  mimeType: string  // MIME type (e.g. image/png, image/jpeg)
   preview: string  // data URL for display
 }
 
@@ -2014,7 +2069,8 @@ function App() {
     const command = input.trim()
     const images = tabImages.map(img => ({
       data: img.data,
-      name: img.name
+      name: img.name,
+      mimeType: img.mimeType
     }))
 
     // Display user message with image indicators
@@ -2078,21 +2134,17 @@ function App() {
       const file = item.getAsFile()
       if (!file) continue
 
-      const reader = new FileReader()
-      reader.onload = () => {
-        const dataUrl = reader.result as string
-        const base64 = dataUrl.split(',')[1]
-
+      resizeImage(file).then(({ base64, dataUrl, mimeType }) => {
         setTerminalTabs(prev => prev.map(tab =>
           tab.id === tabId ? { ...tab, pendingImages: [...tab.pendingImages, {
             id: generateId(),
             data: base64,
             name: `paste-${Date.now()}-${tab.pendingImages.length}.png`,
+            mimeType,
             preview: dataUrl
           }] } : tab
         ))
-      }
-      reader.readAsDataURL(file)
+      }).catch(err => console.error('Failed to process pasted image:', err))
     }
   }, [activeTerminalTab])
 
@@ -2106,21 +2158,17 @@ function App() {
     for (const file of Array.from(files)) {
       if (!file.type.startsWith('image/')) continue
 
-      const reader = new FileReader()
-      reader.onload = () => {
-        const dataUrl = reader.result as string
-        const base64 = dataUrl.split(',')[1]
-
+      resizeImage(file).then(({ base64, dataUrl, mimeType }) => {
         setTerminalTabs(prev => prev.map(tab =>
           tab.id === tabId ? { ...tab, pendingImages: [...tab.pendingImages, {
             id: generateId(),
             data: base64,
             name: file.name || `image-${Date.now()}.png`,
+            mimeType,
             preview: dataUrl
           }] } : tab
         ))
-      }
-      reader.readAsDataURL(file)
+      }).catch(err => console.error('Failed to process image:', err))
     }
 
     // Reset the input so the same file can be selected again
