@@ -18,6 +18,7 @@ import { initRecitationsDb, listRecitations, createRecitation, updateRecitation,
 import { initResearchDb, listTopics, createTopic, updateTopic, deleteTopic, listArticles, deleteArticle, generateResearchArticles } from './research.js';
 import { initFeatureFlagsDb, listFeatureFlags, toggleFeatureFlag } from './feature-flags.js';
 import { initGoogleAuthDb, getGoogleAuthStatus, getGoogleAuthUrl, handleGoogleCallback, clearTokens as clearGoogleTokens, fetchGoogleContacts, getRandomGoogleContacts } from './google-contacts.js';
+import { fetchUpcomingEvents } from './google-calendar.js';
 import { getWeatherLocation, setWeatherLocation, geocodeLocation, fetchConfiguredWeather } from './weather.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
@@ -504,6 +505,21 @@ app.get('/google/contacts/random', async (_req, res) => {
     }
     console.error('Error fetching random Google contacts:', error);
     res.status(500).json({ error: 'Failed to fetch random Google contacts' });
+  }
+});
+
+// List upcoming Google Calendar events
+app.get('/google/calendar/events', async (_req, res) => {
+  try {
+    const events = await fetchUpcomingEvents(4, OAUTH_REDIRECT_URI);
+    res.json(events);
+  } catch (error: any) {
+    if (error.message?.includes('Not authenticated') || error.message?.includes('authentication expired')) {
+      res.status(401).json({ error: error.message });
+      return;
+    }
+    console.error('Error fetching Google Calendar events:', error);
+    res.status(500).json({ error: 'Failed to fetch Google Calendar events' });
   }
 });
 

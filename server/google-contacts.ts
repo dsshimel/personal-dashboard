@@ -81,7 +81,10 @@ export function getGoogleAuthUrl(redirectUri?: string): string | null {
   return client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: ['https://www.googleapis.com/auth/contacts.readonly'],
+    scope: [
+      'https://www.googleapis.com/auth/contacts.readonly',
+      'https://www.googleapis.com/auth/calendar.events.readonly',
+    ],
   });
 }
 
@@ -238,7 +241,7 @@ function isAuthenticated(): boolean {
   return !!(tokens && tokens.refresh_token);
 }
 
-function saveTokens(tokens: StoredTokens): void {
+export function saveTokens(tokens: StoredTokens): void {
   const db = getDb();
   const stmt = db.prepare('INSERT OR REPLACE INTO google_auth (key, value) VALUES (?, ?)');
   db.transaction(() => {

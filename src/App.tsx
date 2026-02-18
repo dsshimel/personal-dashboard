@@ -134,7 +134,7 @@ type HardwareTab = 'webcams'
 type DiagnosticsTab = 'logs' | 'client-perf' | 'server-perf'
 type CrmTab = 'contacts' | 'google-contacts'
 type TodoTab = 'todos'
-type BriefingTab = 'briefing-editor'
+type BriefingTab = 'briefing-editor' | 'briefing-calendar'
 type RecitationsTab = 'recitations-editor'
 type ResearchTab = 'topics'
 type FeatureFlagsTab = 'flags'
@@ -142,7 +142,7 @@ type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | Br
 
 // Keep alphabetized by section key
 const SECTION_TABS: Record<Section, SubTab[]> = {
-  briefing: ['briefing-editor'],
+  briefing: ['briefing-editor', 'briefing-calendar'],
   crm: ['contacts', 'google-contacts'],
   diagnostics: ['logs', 'client-perf', 'server-perf'],
   'feature-flags': ['flags'],
@@ -160,6 +160,7 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
   'google-contacts': 'Google Contacts',
   conversations: 'Conversations',
   flags: 'Flags',
+  'briefing-calendar': 'Calendar',
   'briefing-editor': 'Prompt Editor',
   projects: 'Projects',
   'recitations-editor': 'Recitations',
@@ -222,6 +223,18 @@ interface GoogleContact {
   phone: string | null
   organization: string | null
   photoUrl: string | null
+}
+
+/** A Google Calendar event. */
+interface CalendarEvent {
+  id: string
+  summary: string
+  description: string | null
+  start: string
+  end: string
+  location: string | null
+  allDay: boolean
+  htmlLink: string | null
 }
 
 /** Represents a todo item. */
@@ -341,6 +354,10 @@ function App() {
   const [loadingRandomContacts, setLoadingRandomContacts] = useState(false)
   const [importingContacts, setImportingContacts] = useState<Set<string>>(new Set())
   const [recentlyImported, setRecentlyImported] = useState<Set<string>>(new Set())
+
+  // Google Calendar state
+  const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([])
+  const [loadingCalendarEvents, setLoadingCalendarEvents] = useState(false)
 
   // Feature flags state
   const [featureFlags, setFeatureFlags] = useState<FeatureFlag[]>([])
@@ -1561,12 +1578,29 @@ function App() {
         setGoogleAuthStatus({ configured: true, authenticated: false })
         setGoogleContacts([])
         setRandomGoogleContacts([])
+        setCalendarEvents([])
         setRecentlyImported(new Set())
       } else {
         console.error('Failed to disconnect Google:', res.status)
       }
     } catch (error) {
       console.error('Failed to disconnect Google:', error)
+    }
+  }, [])
+
+  const fetchCalendarEvents = useCallback(async () => {
+    setLoadingCalendarEvents(true)
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/google/calendar/events`)
+      if (res.ok) {
+        setCalendarEvents(await res.json())
+      } else if (res.status === 401) {
+        setGoogleAuthStatus(prev => ({ ...prev, authenticated: false }))
+      }
+    } catch (error) {
+      console.error('Failed to fetch calendar events:', error)
+    } finally {
+      setLoadingCalendarEvents(false)
     }
   }, [])
 
@@ -1863,6 +1897,14 @@ function App() {
       fetchRandomGoogleContacts()
     }
   }, [activeSubTab, googleAuthStatus.authenticated, fetchAllGoogleContacts, fetchRandomGoogleContacts])
+
+  // Fetch Google Calendar events when the calendar tab is active
+  useEffect(() => {
+    if (activeSubTab === 'briefing-calendar') {
+      fetchGoogleAuthStatus()
+      fetchCalendarEvents()
+    }
+  }, [activeSubTab, fetchGoogleAuthStatus, fetchCalendarEvents])
 
   // Handle Google OAuth callback redirect
   const [googleAuthError, setGoogleAuthError] = useState<string | null>(null)
@@ -3190,6 +3232,87 @@ function App() {
                   />
                 </div>
               )}
+            </>
+          )}
+        </div>
+
+        {/* Calendar - always mounted, hidden when inactive */}
+        <div className={`briefing-calendar-container ${activeSubTab !== 'briefing-calendar' ? 'tab-hidden' : ''}`}>
+          {!googleAuthStatus.configured ? (
+            <div className="google-auth-prompt">
+              <h3>Google Calendar</h3>
+              <p>Google Calendar integration is not configured.</p>
+              <p className="google-auth-hint">
+                Set <code>GOOGLE_PEOPLE_API_CLIENT_ID</code> and <code>GOOGLE_PEOPLE_API_CLIENT_SECRET</code> in your <code>.env</code> file, then restart the server.
+              </p>
+            </div>
+          ) : !googleAuthStatus.authenticated ? (
+            <div className="google-auth-prompt">
+              <h3>Google Calendar</h3>
+              <p>Connect your Google account to view upcoming calendar events.</p>
+              <p className="google-auth-hint">Read-only access to your calendar.</p>
+              <button className="google-connect-button" onClick={handleGoogleConnect}>
+                Connect Google Account
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="calendar-header">
+                <h3>Upcoming Events</h3>
+                <span className="calendar-event-count">
+                  {calendarEvents.length} event{calendarEvents.length !== 1 ? 's' : ''}
+                </span>
+              </div>
+              {loadingCalendarEvents && calendarEvents.length === 0 ? (
+                <div className="welcome-message">Loading calendar events...</div>
+              ) : calendarEvents.length === 0 ? (
+                <div className="welcome-message">No upcoming events in the next 4 weeks.</div>
+              ) : (
+                <div className="calendar-events-list">
+                  {(() => {
+                    const groups = new Map<string, CalendarEvent[]>()
+                    for (const event of calendarEvents) {
+                      const dateKey = event.allDay ? event.start : event.start.split('T')[0]
+                      if (!groups.has(dateKey)) groups.set(dateKey, [])
+                      groups.get(dateKey)!.push(event)
+                    }
+                    return Array.from(groups.entries()).map(([dateKey, events]) => (
+                      <div key={dateKey} className="calendar-day-group">
+                        <div className="calendar-day-header">
+                          {new Date(dateKey + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+                        </div>
+                        {events.map(event => (
+                          <div key={event.id} className="calendar-event-card">
+                            <div className="calendar-event-time">
+                              {event.allDay
+                                ? 'All day'
+                                : `${new Date(event.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} – ${new Date(event.end).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`}
+                            </div>
+                            <div className="calendar-event-details">
+                              <div className="calendar-event-summary">
+                                {event.htmlLink
+                                  ? <a href={event.htmlLink} target="_blank" rel="noopener noreferrer" className="terminal-link">{event.summary}</a>
+                                  : event.summary}
+                              </div>
+                              {event.location && (
+                                <div className="calendar-event-location">{event.location}</div>
+                              )}
+                              {event.description && (
+                                <div className="calendar-event-description">
+                                  {event.description.length > 200 ? event.description.substring(0, 200) + '...' : event.description}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ))
+                  })()}
+                </div>
+              )}
+              <button className="google-disconnect-button" onClick={handleGoogleDisconnect}>
+                Disconnect Google Account
+              </button>
             </>
           )}
         </div>

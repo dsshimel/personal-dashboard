@@ -114,13 +114,13 @@ describe('Daily Email Module', () => {
     test('returns the most recent briefing', () => {
       const db = require('../../server/db').getDb();
       db.prepare(`
-        INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run('b1', '<p>Old</p>', 'prompt1', 3, 0, 0, '2025-01-01T08:00:00Z');
+        INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, has_calendar, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run('b1', '<p>Old</p>', 'prompt1', 3, 0, 0, 0, '2025-01-01T08:00:00Z');
       db.prepare(`
-        INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run('b2', '<p>New</p>', 'prompt2', 5, 1, 1, '2025-01-02T08:00:00Z');
+        INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, has_calendar, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run('b2', '<p>New</p>', 'prompt2', 5, 1, 1, 1, '2025-01-02T08:00:00Z');
 
       const latest = getLatestBriefing();
       expect(latest).not.toBeNull();
@@ -130,6 +130,7 @@ describe('Daily Email Module', () => {
       expect(latest!.todoCount).toBe(5);
       expect(latest!.hasWeather).toBe(true);
       expect(latest!.hasRecitations).toBe(true);
+      expect(latest!.hasCalendar).toBe(true);
       expect(latest!.createdAt).toBe('2025-01-02T08:00:00Z');
     });
   });
@@ -171,13 +172,14 @@ describe('Daily Email Module', () => {
     test('correctly converts boolean fields', () => {
       const db = require('../../server/db').getDb();
       db.prepare(`
-        INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run('b1', '<p>test</p>', 'prompt', 2, 1, 0, '2025-01-01T08:00:00Z');
+        INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, has_calendar, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run('b1', '<p>test</p>', 'prompt', 2, 1, 0, 1, '2025-01-01T08:00:00Z');
 
       const briefings = listBriefings();
       expect(briefings[0].hasWeather).toBe(true);
       expect(briefings[0].hasRecitations).toBe(false);
+      expect(briefings[0].hasCalendar).toBe(true);
       expect(briefings[0].todoCount).toBe(2);
     });
   });

@@ -19,6 +19,7 @@ import { getDb } from './db.js';
 import { listTodos, type Todo } from './todo.js';
 import { listRecitations, type Recitation } from './recitations.js';
 import { fetchConfiguredWeather, formatWeatherForPrompt } from './weather.js';
+import { fetchUpcomingEvents, type CalendarEvent } from './google-calendar.js';
 
 /** Default briefing prompt used when none is saved. */
 const DEFAULT_PROMPT = `You are a personal productivity assistant. Given the following todo list, generate a daily briefing email that:
@@ -57,6 +58,7 @@ export function initDailyEmailDb(db: Database): void {
       has_weather INTEGER NOT NULL DEFAULT 0,
       has_recitations INTEGER NOT NULL DEFAULT 0,
       has_research INTEGER NOT NULL DEFAULT 0,
+      has_calendar INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
     )
   `);
@@ -64,6 +66,13 @@ export function initDailyEmailDb(db: Database): void {
   // Migration: add has_research column if it doesn't exist (for existing databases)
   try {
     db.run('ALTER TABLE daily_briefings ADD COLUMN has_research INTEGER NOT NULL DEFAULT 0');
+  } catch {
+    // Column already exists
+  }
+
+  // Migration: add has_calendar column if it doesn't exist (for existing databases)
+  try {
+    db.run('ALTER TABLE daily_briefings ADD COLUMN has_calendar INTEGER NOT NULL DEFAULT 0');
   } catch {
     // Column already exists
   }
@@ -149,6 +158,41 @@ function buildRecitationsHtml(recitations: Recitation[]): string {
 }
 
 /**
+ * Builds an HTML section for calendar events to append to the email.
+ * Groups events by day with time ranges.
+ */
+function buildCalendarHtml(events: CalendarEvent[]): string {
+  if (events.length === 0) return '';
+
+  const byDay = new Map<string, CalendarEvent[]>();
+  for (const event of events) {
+    const dateKey = event.allDay ? event.start : event.start.split('T')[0];
+    if (!byDay.has(dateKey)) byDay.set(dateKey, []);
+    byDay.get(dateKey)!.push(event);
+  }
+
+  let html = `
+    <hr style="border: none; border-top: 1px solid #ddd; margin: 24px 0;">
+    <h3 style="color: #333; margin-bottom: 12px;">Upcoming Events</h3>`;
+
+  for (const [dateKey, dayEvents] of byDay) {
+    const label = new Date(dateKey + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+    html += `<p style="color: #333; font-weight: 600; margin: 16px 0 6px 0; font-size: 14px;">${label}</p>`;
+    html += '<ul style="color: #444; line-height: 1.6; padding-left: 20px; list-style: none; margin: 0;">';
+    for (const ev of dayEvents) {
+      const time = ev.allDay
+        ? '<span style="color: #888;">All day</span>'
+        : `<span style="color: #888;">${new Date(ev.start).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })} – ${new Date(ev.end).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}</span>`;
+      const location = ev.location ? `<br><span style="color: #888; font-size: 13px;">${ev.location}</span>` : '';
+      html += `<li style="margin-bottom: 8px;">${time} &nbsp; <strong>${ev.summary}</strong>${location}</li>`;
+    }
+    html += '</ul>';
+  }
+
+  return html;
+}
+
+/**
  * Spawns the Claude CLI to generate the briefing content.
  * Uses `claude -p` for a one-shot print-mode call with no streaming.
  *
@@ -197,7 +241,7 @@ async function generateBriefingWithClaude(prompt: string, weatherText: string | 
 /**
  * Builds the complete email HTML from an AI briefing and the todo list.
  */
-function buildEmailHtml(aiBriefing: string | null, todos: Todo[], recitations: Recitation[]): string {
+function buildEmailHtml(aiBriefing: string | null, todos: Todo[], calendarEvents: CalendarEvent[], recitations: Recitation[]): string {
   const wrapper = (content: string) => `
     <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto;">
       <h2 style="color: #333;">Daily Briefing</h2>
@@ -211,9 +255,10 @@ function buildEmailHtml(aiBriefing: string | null, todos: Todo[], recitations: R
     : '<p style="color: #666;">AI briefing unavailable.</p>';
 
   const todosSection = buildTodosHtml(todos);
+  const calendarSection = buildCalendarHtml(calendarEvents);
   const recitationsSection = buildRecitationsHtml(recitations);
 
-  return wrapper(briefingSection + todosSection + recitationsSection);
+  return wrapper(briefingSection + todosSection + calendarSection + recitationsSection);
 }
 
 /** Row shape from the daily_briefings table. */
@@ -225,6 +270,7 @@ interface DailyBriefingRow {
   has_weather: number;
   has_recitations: number;
   has_research: number;
+  has_calendar: number;
   created_at: string;
 }
 
@@ -236,6 +282,7 @@ export interface DailyBriefing {
   todoCount: number;
   hasWeather: boolean;
   hasRecitations: boolean;
+  hasCalendar: boolean;
   createdAt: string;
 }
 
@@ -248,6 +295,7 @@ function rowToBriefing(row: DailyBriefingRow): DailyBriefing {
     todoCount: row.todo_count,
     hasWeather: row.has_weather === 1,
     hasRecitations: row.has_recitations === 1,
+    hasCalendar: row.has_calendar === 1,
     createdAt: row.created_at,
   };
 }
@@ -277,15 +325,15 @@ export function listBriefings(limit = 20): DailyBriefing[] {
 /**
  * Saves a generated briefing to the database.
  */
-function saveBriefing(html: string, prompt: string, todoCount: number, hasWeather: boolean, hasRecitations: boolean): DailyBriefing {
+function saveBriefing(html: string, prompt: string, todoCount: number, hasWeather: boolean, hasRecitations: boolean, hasCalendar: boolean): DailyBriefing {
   const db = getDb();
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   db.prepare(`
-    INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(id, html, prompt, todoCount, hasWeather ? 1 : 0, hasRecitations ? 1 : 0, now);
-  return { id, html, prompt, todoCount, hasWeather, hasRecitations, createdAt: now };
+    INSERT INTO daily_briefings (id, html, prompt, todo_count, has_weather, has_recitations, has_calendar, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, html, prompt, todoCount, hasWeather ? 1 : 0, hasRecitations ? 1 : 0, hasCalendar ? 1 : 0, now);
+  return { id, html, prompt, todoCount, hasWeather, hasRecitations, hasCalendar, createdAt: now };
 }
 
 /** Optional callback for reporting progress during briefing generation. */
@@ -322,14 +370,31 @@ export async function generateBriefingPreview(onProgress?: BriefingProgressCallb
     onProgress?.('Weather fetch failed, continuing without weather');
   }
 
+  // Fetch calendar events (non-fatal if it fails or Google is not connected)
+  onProgress?.('Fetching calendar events...');
+  let calendarEvents: CalendarEvent[] = [];
+  let hasCalendar = false;
+  try {
+    calendarEvents = await fetchUpcomingEvents(4);
+    if (calendarEvents.length > 0) {
+      hasCalendar = true;
+      onProgress?.(`Loaded ${calendarEvents.length} calendar event${calendarEvents.length !== 1 ? 's' : ''}`);
+    } else {
+      onProgress?.('No upcoming calendar events');
+    }
+  } catch (error) {
+    console.error('Failed to fetch calendar events for briefing:', error);
+    onProgress?.('Calendar fetch failed, continuing without calendar');
+  }
+
   // Generate AI briefing by spawning Claude CLI
   onProgress?.('Generating briefing with Claude... (this is the slow part)');
   const aiBriefing = await generateBriefingWithClaude(prompt, weatherText);
 
   onProgress?.('Building email HTML...');
-  const html = buildEmailHtml(aiBriefing, todos, recitations);
+  const html = buildEmailHtml(aiBriefing, todos, calendarEvents, recitations);
 
-  const briefing = saveBriefing(html, prompt, todos.length, hasWeather, recitations.length > 0);
+  const briefing = saveBriefing(html, prompt, todos.length, hasWeather, recitations.length > 0, hasCalendar);
   onProgress?.('Briefing ready');
   return briefing;
 }
