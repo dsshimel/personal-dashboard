@@ -44,6 +44,7 @@ Browser
 | `server/webcam-manager.ts` | `WebcamManager` class - FFmpeg webcam capture/streaming |
 | `server/telemetry.ts` | Prometheus metrics definitions, Express middleware, `/metrics` endpoints |
 | `src/telemetry.ts` | Client-side Web Vitals collection, pushes metrics to server |
+| `server/google-calendar.ts` | Google Calendar integration - fetches and caches upcoming events |
 | `server/restart-watcher.ts` | Process watcher for graceful server restarts |
 
 ## WebSocket Protocol
@@ -132,4 +133,5 @@ To modify dashboards, edit the JSON in `grafana/dashboards/` and restart Grafana
 | `/projects/:id` | DELETE | Remove a project |
 | `/projects/:id/conversations` | GET | List conversations for a project |
 | `/projects/:id/conversations` | POST | Add conversation to project (body: `{conversationId}`) |
+| `/google/calendar/events` | GET | List upcoming Google Calendar events (4 weeks) |
 | `/projects/:id/conversations/:convId` | DELETE | Remove conversation from project |
