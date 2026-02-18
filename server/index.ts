@@ -1339,7 +1339,28 @@ wss.on('connection', (ws) => {
   });
 });
 
-server.listen(Number(PORT), '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT} (listening on all interfaces)`);
-  console.log(`Working directory: ${WORKING_DIR}`);
+// Listen with retry — handles ghost sockets on Windows where a dead process's port
+// lingers in the OS TCP table until the kernel reclaims it.
+const MAX_LISTEN_RETRIES = 30;
+const LISTEN_RETRY_DELAY_MS = 2_000;
+let listenRetries = 0;
+
+function startListening() {
+  server.listen(Number(PORT), '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT} (listening on all interfaces)`);
+    console.log(`Working directory: ${WORKING_DIR}`);
+  });
+}
+
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE' && listenRetries < MAX_LISTEN_RETRIES) {
+    listenRetries++;
+    console.warn(`Port ${PORT} in use, retrying in ${LISTEN_RETRY_DELAY_MS / 1000}s (attempt ${listenRetries}/${MAX_LISTEN_RETRIES})...`);
+    setTimeout(startListening, LISTEN_RETRY_DELAY_MS);
+  } else {
+    console.error(`Failed to start server: ${err.message}`);
+    process.exit(1);
+  }
 });
+
+startListening();

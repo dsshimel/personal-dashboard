@@ -10,12 +10,14 @@
 
 import { spawn, execSync } from 'child_process';
 import { watch, unlinkSync, existsSync } from 'fs';
+import { createServer as createNetServer } from 'net';
 import { join } from 'path';
 
 const WORKING_DIR = process.cwd();
 /** Path to the signal file that triggers a restart. */
 const SIGNAL_FILE = join(WORKING_DIR, '.restart-signal');
 const isWindows = process.platform === 'win32';
+const APP_PORTS = [4001, 4002, 6969];
 
 /** The currently running app process. */
 let appProcess: ReturnType<typeof spawn> | null = null;
@@ -93,29 +95,142 @@ function stopHeartbeatMonitor() {
 }
 
 /**
- * Kills any processes listening on the app's ports.
- * Uses platform-specific commands (taskkill on Windows, fuser on Linux).
+ * Gets PIDs of processes listening on a port.
+ * Returns empty array if no listeners found.
  */
-function killProcessesOnPorts() {
-  const ports = [4001, 4002, 6969];
-  console.log(`[Watcher] Killing processes on ports ${ports.join(', ')}...`);
-
+function getListeningPids(port: number): number[] {
   if (isWindows) {
-    for (const port of ports) {
-      try {
-        execSync(`for /f "tokens=5" %a in ('netstat -aon ^| findstr :${port} ^| findstr LISTENING') do taskkill /F /PID %a`, {
-          shell: 'cmd.exe',
-          stdio: 'ignore'
-        });
-      } catch { /* ignore */ }
-    }
+    try {
+      const output = execSync(
+        `powershell -NoProfile -Command "Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess"`,
+        { shell: 'cmd.exe', encoding: 'utf-8', timeout: 10_000 }
+      ).trim();
+      if (output) {
+        return [...new Set(output.split(/\r?\n/).map(s => parseInt(s.trim())).filter(n => !isNaN(n)))];
+      }
+    } catch { /* ignore */ }
   } else {
-    for (const port of ports) {
-      try {
-        execSync(`fuser -k ${port}/tcp 2>/dev/null || true`, { stdio: 'ignore' });
-      } catch { /* ignore */ }
+    try {
+      const output = execSync(
+        `fuser ${port}/tcp 2>/dev/null || true`,
+        { encoding: 'utf-8' }
+      ).trim();
+      if (output) {
+        return [...new Set(output.split(/\s+/).map(s => parseInt(s.trim())).filter(n => !isNaN(n)))];
+      }
+    } catch { /* ignore */ }
+  }
+  return [];
+}
+
+/**
+ * Checks if a process with the given PID is still alive.
+ */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Kills any processes listening on the app's ports.
+ * Returns true if all blocking processes are ghost sockets (dead process, port still held).
+ */
+function killProcessesOnPorts(): boolean {
+  console.log(`[Watcher] Killing processes on ports ${APP_PORTS.join(', ')}...`);
+  let allGhosts = true;
+
+  for (const port of APP_PORTS) {
+    const pids = getListeningPids(port);
+    if (pids.length === 0) continue;
+
+    for (const pid of pids) {
+      if (!isProcessAlive(pid)) {
+        console.log(`[Watcher] Port ${port}: PID ${pid} is dead (ghost socket, OS will reclaim)`);
+        continue;
+      }
+      allGhosts = false;
+      console.log(`[Watcher] Port ${port}: killing PID ${pid}`);
+      if (isWindows) {
+        try {
+          execSync(`taskkill /F /T /PID ${pid}`, { shell: 'cmd.exe', stdio: 'ignore' });
+        } catch { /* ignore */ }
+      } else {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch { /* ignore */ }
+      }
     }
   }
+
+  return allGhosts;
+}
+
+/**
+ * Checks if a port is available for binding.
+ * Cross-platform — works on both Windows and Linux.
+ */
+function isPortFree(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createNetServer();
+    server.once('error', () => resolve(false));
+    server.listen(port, '0.0.0.0', () => {
+      server.close(() => resolve(true));
+    });
+  });
+}
+
+/**
+ * Waits until all specified ports are free, retrying kills if needed.
+ * If ports are blocked by ghost sockets (dead processes), proceeds after
+ * a short wait since the Express server has its own listen-retry logic.
+ */
+async function waitForPortsFree(ports: number[], maxWaitMs: number = 15_000): Promise<boolean> {
+  const start = Date.now();
+  let retryKills = 0;
+  let ghostDetected = false;
+
+  while (Date.now() - start < maxWaitMs) {
+    const results = await Promise.all(ports.map(isPortFree));
+    if (results.every(Boolean)) return true;
+
+    const busyPorts = ports.filter((_, i) => !results[i]);
+
+    // Check if all blocking processes are ghosts (dead but port still held by OS)
+    if (!ghostDetected) {
+      const allGhosts = busyPorts.every(port => {
+        const pids = getListeningPids(port);
+        return pids.length === 0 || pids.every(pid => !isProcessAlive(pid));
+      });
+      if (allGhosts && busyPorts.length > 0) {
+        ghostDetected = true;
+        console.log(`[Watcher] Ghost sockets detected on ports ${busyPorts.join(', ')} (dead process, OS hasn't reclaimed).`);
+        console.log(`[Watcher] Proceeding — server will retry listen() until port is available.`);
+        return false;
+      }
+    }
+
+    console.log(`[Watcher] Waiting for ports to be free: ${busyPorts.join(', ')}`);
+
+    // Retry killing every 3 seconds, up to 3 times
+    if (retryKills < 3 && Date.now() - start >= (retryKills + 1) * 3000) {
+      retryKills++;
+      console.log(`[Watcher] Retry kill attempt ${retryKills}...`);
+      killProcessesOnPorts();
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+
+  const finalResults = await Promise.all(ports.map(isPortFree));
+  const stillBusy = ports.filter((_, i) => !finalResults[i]);
+  if (stillBusy.length > 0) {
+    console.warn(`[Watcher] WARNING: Ports still in use after ${maxWaitMs}ms: ${stillBusy.join(', ')}`);
+  }
+  return stillBusy.length === 0;
 }
 
 /** Starts the app by running `bun run prod:all`. */
@@ -139,7 +254,7 @@ function startApp() {
 }
 
 /** Handles restart by stopping current app, killing ports, and restarting. */
-function restart() {
+async function restart() {
   console.log('[Watcher] Restart triggered!');
   restartInProgress = true;
   stopHeartbeatMonitor();
@@ -157,17 +272,11 @@ function restart() {
     appProcess = null;
   }
 
-  // Kill any remaining processes on our ports
+  // Kill any remaining processes on our ports and wait until they're actually free
   killProcessesOnPorts();
+  await waitForPortsFree(APP_PORTS);
 
-  // Wait for processes to fully exit, then kill ports again to catch
-  // any late-starting processes (e.g. Express starting after its build step)
-  setTimeout(() => {
-    killProcessesOnPorts();
-    setTimeout(() => {
-      startApp();
-    }, 1500);
-  }, 3000);
+  startApp();
 }
 
 // Clean up signal file if it exists
@@ -181,7 +290,7 @@ console.log(`[Watcher] Watching for signal file: ${SIGNAL_FILE}`);
 
 // Create a directory watcher
 const watcher = watch(WORKING_DIR, (_eventType, filename) => {
-  if (filename === '.restart-signal' && existsSync(SIGNAL_FILE)) {
+  if (filename === '.restart-signal' && existsSync(SIGNAL_FILE) && !restartInProgress) {
     // Remove the signal file
     try {
       unlinkSync(SIGNAL_FILE);
@@ -191,13 +300,11 @@ const watcher = watch(WORKING_DIR, (_eventType, filename) => {
   }
 });
 
-// Kill any existing processes on our ports before starting
+// Kill any existing processes on our ports and wait until they're free
 killProcessesOnPorts();
-
-// Wait a moment for ports to be released, then start the app
-setTimeout(() => {
+waitForPortsFree(APP_PORTS).then(() => {
   startApp();
-}, 1500);
+});
 
 // Handle graceful shutdown
 process.on('SIGINT', () => {
