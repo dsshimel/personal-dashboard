@@ -6,6 +6,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useLocation, useNavigate } from 'react-router-dom'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
@@ -240,6 +241,67 @@ const SECTION_LABELS: Record<Section, string> = {
   todo: '✅ TODO List',
 }
 
+/**
+ * Maps SubTab IDs to URL slugs. Strips section prefixes for cleaner URLs.
+ * Sub-tabs whose name matches the section's default don't need a slug (navigated via section URL).
+ */
+const SUBTAB_TO_SLUG: Record<SubTab, string> = {
+  'briefing-editor': 'editor',
+  'briefing-calendar': 'calendar',
+  'client-perf': 'client-perf',
+  contacts: 'contacts',
+  conversations: 'conversations',
+  flags: 'flags',
+  'google-contacts': 'google-contacts',
+  logs: 'logs',
+  projects: 'projects',
+  'recitations-editor': 'editor',
+  'server-perf': 'server-perf',
+  terminal: 'terminal',
+  todos: 'todos',
+  topics: 'topics',
+  webcams: 'webcams',
+}
+
+/** Reverse lookup: for each section, maps URL slug → SubTab. */
+const SLUG_TO_SUBTAB: Record<Section, Record<string, SubTab>> = Object.fromEntries(
+  (Object.keys(SECTION_TABS) as Section[]).map(section => [
+    section,
+    Object.fromEntries(
+      SECTION_TABS[section].map(tab => [SUBTAB_TO_SLUG[tab], tab])
+    ),
+  ])
+) as Record<Section, Record<string, SubTab>>
+
+/** Set of valid section path segments for URL parsing. */
+const VALID_SECTIONS = new Set(Object.keys(SECTION_TABS) as Section[])
+
+/** Parses a URL pathname into section and subTab state. */
+function parsePathToState(pathname: string): { section: Section; subTab: SubTab } {
+  const parts = pathname.split('/').filter(Boolean)
+  const sectionPath = parts[0] || 'terminal'
+  const subTabSlug = parts[1]
+
+  if (!VALID_SECTIONS.has(sectionPath as Section)) {
+    return { section: 'terminal', subTab: 'terminal' }
+  }
+
+  const section = sectionPath as Section
+  if (subTabSlug && SLUG_TO_SUBTAB[section][subTabSlug]) {
+    return { section, subTab: SLUG_TO_SUBTAB[section][subTabSlug] }
+  }
+
+  return { section, subTab: SECTION_TABS[section][0] }
+}
+
+/** Builds a URL path from section and subTab state. */
+function buildPath(section: Section, subTab: SubTab): string {
+  if (section === 'terminal' && subTab === 'terminal') return '/'
+  const defaultSubTab = SECTION_TABS[section][0]
+  if (subTab === defaultSubTab) return `/${section}`
+  return `/${section}/${SUBTAB_TO_SLUG[subTab]}`
+}
+
 /** Represents a feature flag. */
 interface FeatureFlag {
   key: string
@@ -360,9 +422,14 @@ function App() {
   const [loadingSessions, setLoadingSessions] = useState(false)
   const [filterByProject, setFilterByProject] = useState(true)
 
-  // UI state
-  const [activeSection, setActiveSection] = useState<Section>('terminal')
-  const [activeSubTab, setActiveSubTab] = useState<SubTab>('terminal')
+  // Routing
+  const location = useLocation()
+  const navigate = useNavigate()
+
+  // UI state — initialize from URL
+  const initialRoute = useMemo(() => parsePathToState(window.location.pathname), [])
+  const [activeSection, setActiveSection] = useState<Section>(initialRoute.section)
+  const [activeSubTab, setActiveSubTab] = useState<SubTab>(initialRoute.subTab)
   const [restartCountdown, setRestartCountdown] = useState<number | null>(null)
   const [showScrollButton, setShowScrollButton] = useState(false)
   const [showLogsScrollButton, setShowLogsScrollButton] = useState(false)
@@ -488,6 +555,15 @@ function App() {
   useEffect(() => {
     activeTerminalTabIdRef.current = activeTerminalTabId
   }, [activeTerminalTabId])
+
+  // Sync URL → state on browser back/forward
+  useEffect(() => {
+    const { section, subTab } = parsePathToState(location.pathname)
+    if (section !== activeSection || subTab !== activeSubTab) {
+      setActiveSection(section)
+      setActiveSubTab(subTab)
+    }
+  }, [location.pathname]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Derived: the currently active terminal tab. */
   const activeTerminalTab = useMemo(() =>
@@ -919,6 +995,7 @@ function App() {
                 }
                 persistTabs(next, null)
                 setActiveSubTab('projects')
+                navigate('/terminal/projects')
                 return null
               }
               persistTabs(next, current)
@@ -932,7 +1009,7 @@ function App() {
     } catch (error) {
       console.error('Failed to remove project:', error)
     }
-  }, [fetchProjects, persistTabs])
+  }, [fetchProjects, persistTabs, navigate])
 
   /** Fetches conversations for a specific project. */
   const fetchProjectConversations = useCallback(async (projectId: string) => {
@@ -1733,6 +1810,7 @@ function App() {
     if (existing) {
       setActiveTerminalTabId(tabId)
       setActiveSubTab('terminal')
+      navigate('/')
       return
     }
 
@@ -1757,6 +1835,7 @@ function App() {
     })
     setActiveTerminalTabId(tabId)
     setActiveSubTab('terminal')
+    navigate('/')
 
     // Resume last conversation if exists
     if (project.lastConversationId) {
@@ -1786,7 +1865,7 @@ function App() {
     } else {
       addTabMessage(tabId, 'status', `Opened project: ${project.name} (new conversation)`)
     }
-  }, [updateTab, addTabMessage, persistTabs])
+  }, [updateTab, addTabMessage, persistTabs, navigate])
 
   /** Closes a terminal tab and cleans up server resources. */
   const closeTerminalTab = useCallback((tabId: string) => {
@@ -1805,6 +1884,7 @@ function App() {
           }
           persistTabs(next, null)
           setActiveSubTab('projects')
+          navigate('/terminal/projects')
           return null
         }
         persistTabs(next, current)
@@ -1812,7 +1892,7 @@ function App() {
       })
       return next
     })
-  }, [persistTabs])
+  }, [persistTabs, navigate])
 
   useEffect(() => {
     initClientTelemetry()
@@ -1859,10 +1939,8 @@ function App() {
         terminalTabsRef.current = restored
         if (storedActiveId && restored.find(t => t.id === storedActiveId)) {
           setActiveTerminalTabId(storedActiveId)
-          setActiveSubTab('terminal')
         } else if (restored.length > 0) {
           setActiveTerminalTabId(restored[0].id)
-          setActiveSubTab('terminal')
         }
       } catch {
         // Ignore invalid stored data
@@ -2199,6 +2277,7 @@ function App() {
     setSidebarOpen(false)
     if (activeTerminalTab) {
       setActiveSubTab('terminal')
+      navigate('/')
     }
   }
 
@@ -2258,6 +2337,7 @@ function App() {
     })
     setSidebarOpen(false)
     setActiveSubTab('terminal')
+    navigate('/')
 
     // Fetch and restore conversation history
     try {
@@ -2362,18 +2442,22 @@ function App() {
   /** Switches between sections (Terminal, Hardware, Diagnostics). */
   const handleSectionChange = useCallback((section: Section) => {
     setActiveSection(section)
+    let subTab: SubTab
     if (section === 'terminal' && terminalTabs.length > 0 && activeTerminalTabId) {
-      setActiveSubTab('terminal')
+      subTab = 'terminal'
     } else {
-      setActiveSubTab(SECTION_TABS[section][0])
+      subTab = SECTION_TABS[section][0]
     }
+    setActiveSubTab(subTab)
+    navigate(buildPath(section, subTab))
     setSidebarOpen(false)
-  }, [terminalTabs.length, activeTerminalTabId])
+  }, [terminalTabs.length, activeTerminalTabId, navigate])
 
   /** Switches between sub-tabs within the current section. */
   const handleSubTabChange = useCallback((tab: SubTab) => {
     setActiveSubTab(tab)
-  }, [])
+    navigate(buildPath(activeSection, tab))
+  }, [activeSection, navigate])
 
   /** Requests the list of available webcam devices from the server. */
   const requestWebcamList = useCallback(() => {
@@ -2779,7 +2863,7 @@ function App() {
                 <button
                   key={tab.id}
                   className={`tab ${activeTerminalTabId === tab.id && activeSubTab === 'terminal' ? 'active' : ''} ${tab.status === 'processing' ? 'tab-processing' : ''}`}
-                  onClick={() => { setActiveTerminalTabId(tab.id); setActiveSubTab('terminal') }}
+                  onClick={() => { setActiveTerminalTabId(tab.id); setActiveSubTab('terminal'); navigate('/') }}
                 >
                   {tab.projectName}
                   {tab.status === 'processing' && <span className="tab-processing-dot" />}
