@@ -106,6 +106,22 @@ describe('Todo Module', () => {
       expect(todos[1].id).toBe('a');
       expect(todos[2].id).toBe('b');
     });
+
+    test('filters by done status when parameter is provided', () => {
+      const { getDb } = require('../../server/db');
+      const db = getDb();
+      db.prepare('INSERT INTO todos (id, description, created_at, done) VALUES (?, ?, ?, ?)').run('a', 'Pending 1', '2024-01-01T00:00:00.000Z', 0);
+      db.prepare('INSERT INTO todos (id, description, created_at, done) VALUES (?, ?, ?, ?)').run('b', 'Done 1', '2024-06-01T00:00:00.000Z', 1);
+      db.prepare('INSERT INTO todos (id, description, created_at, done) VALUES (?, ?, ?, ?)').run('c', 'Pending 2', '2024-12-01T00:00:00.000Z', 0);
+
+      const pending = listTodos(false);
+      expect(pending.length).toBe(2);
+      expect(pending.every(t => !t.done)).toBe(true);
+
+      const done = listTodos(true);
+      expect(done.length).toBe(1);
+      expect(done.every(t => t.done)).toBe(true);
+    });
   });
 
   describe('updateTodo', () => {
@@ -129,6 +145,29 @@ describe('Todo Module', () => {
 
       const found = getTodo(todo.id);
       expect(found!.done).toBe(false);
+    });
+
+    test('updates description', () => {
+      const todo = createTodo({ description: 'Old text' });
+      const updated = updateTodo(todo.id, { description: 'New text' });
+
+      expect(updated.description).toBe('New text');
+      expect(updated.done).toBe(false);
+
+      const found = getTodo(todo.id);
+      expect(found!.description).toBe('New text');
+    });
+
+    test('updates both done and description', () => {
+      const todo = createTodo({ description: 'Original' });
+      const updated = updateTodo(todo.id, { done: true, description: 'Changed' });
+
+      expect(updated.done).toBe(true);
+      expect(updated.description).toBe('Changed');
+
+      const found = getTodo(todo.id);
+      expect(found!.done).toBe(true);
+      expect(found!.description).toBe('Changed');
     });
 
     test('throws for nonexistent ID', () => {

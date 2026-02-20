@@ -63,13 +63,24 @@ function rowToTodo(row: TodoRow): Todo {
 }
 
 /**
- * Lists all todos sorted by done status (pending first), then creation date (newest first).
+ * Lists todos sorted by creation date (newest first).
+ *
+ * @param done - If provided, filters by done status. If omitted, returns all todos
+ *               sorted by done status (pending first), then creation date.
  */
-export function listTodos(): Todo[] {
+export function listTodos(done?: boolean): Todo[] {
   const db = getDb();
-  const rows = db.prepare(
-    'SELECT * FROM todos ORDER BY done ASC, created_at DESC'
-  ).all() as TodoRow[];
+  let rows: TodoRow[];
+
+  if (done !== undefined) {
+    rows = db.prepare(
+      'SELECT * FROM todos WHERE done = ? ORDER BY created_at DESC'
+    ).all(done ? 1 : 0) as TodoRow[];
+  } else {
+    rows = db.prepare(
+      'SELECT * FROM todos ORDER BY done ASC, created_at DESC'
+    ).all() as TodoRow[];
+  }
 
   return rows.map(rowToTodo);
 }
@@ -111,23 +122,42 @@ export function createTodo(data: { description: string }): Todo {
 }
 
 /**
- * Updates a todo's done status.
+ * Updates a todo.
  *
  * @param id - The todo ID.
- * @param data - Fields to update.
+ * @param data - Fields to update (done and/or description).
  * @returns The updated todo.
  * @throws If the todo is not found.
  */
-export function updateTodo(id: string, data: { done: boolean }): Todo {
+export function updateTodo(id: string, data: { done?: boolean; description?: string }): Todo {
   const db = getDb();
   const existing = getTodo(id);
   if (!existing) {
     throw new Error(`Todo not found: ${id}`);
   }
 
-  db.prepare('UPDATE todos SET done = ? WHERE id = ?').run(data.done ? 1 : 0, id);
+  const updates: string[] = [];
+  const values: (number | string)[] = [];
 
-  return { ...existing, done: data.done };
+  if (data.done !== undefined) {
+    updates.push('done = ?');
+    values.push(data.done ? 1 : 0);
+  }
+  if (data.description !== undefined) {
+    updates.push('description = ?');
+    values.push(data.description);
+  }
+
+  if (updates.length > 0) {
+    values.push(id);
+    db.prepare(`UPDATE todos SET ${updates.join(', ')} WHERE id = ?`).run(...values);
+  }
+
+  return {
+    ...existing,
+    ...(data.done !== undefined && { done: data.done }),
+    ...(data.description !== undefined && { description: data.description }),
+  };
 }
 
 /**

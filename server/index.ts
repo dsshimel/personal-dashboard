@@ -553,9 +553,11 @@ app.get('/google/calendar/events', async (req, res) => {
 
 // --- Todo Endpoints ---
 
-app.get('/todos', (_req, res) => {
+app.get('/todos', (req, res) => {
   try {
-    const todos = listTodos();
+    const doneParam = req.query.done;
+    const done = doneParam === 'true' ? true : doneParam === 'false' ? false : undefined;
+    const todos = listTodos(done);
     res.json(todos);
   } catch (error) {
     console.error('Error listing todos:', error);
@@ -581,13 +583,17 @@ app.post('/todos', (req, res) => {
 
 app.put('/todos/:id', (req, res) => {
   try {
-    const { done } = req.body;
-    if (typeof done !== 'boolean') {
-      res.status(400).json({ error: 'done (boolean) is required' });
+    const { done, description } = req.body;
+    if (done === undefined && description === undefined) {
+      res.status(400).json({ error: 'done (boolean) or description (string) is required' });
       return;
     }
-    const todo = updateTodo(req.params.id, { done });
-    console.log(`Todo ${done ? 'completed' : 'reopened'}: ${todo.description.substring(0, 50)}`);
+    const data: { done?: boolean; description?: string } = {};
+    if (typeof done === 'boolean') data.done = done;
+    if (typeof description === 'string' && description.trim()) data.description = description.trim();
+    const todo = updateTodo(req.params.id, data);
+    if (done !== undefined) console.log(`Todo ${done ? 'completed' : 'reopened'}: ${todo.description.substring(0, 50)}`);
+    if (description !== undefined) console.log(`Todo renamed: ${todo.description.substring(0, 50)}`);
     res.json(todo);
   } catch (error) {
     console.error('Error updating todo:', error);

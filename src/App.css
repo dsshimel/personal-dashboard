@@ -2805,6 +2805,19 @@
   color: #e0e0e0;
   font-size: 14px;
   word-break: break-word;
+  cursor: text;
+}
+
+.todo-edit-input {
+  background: #1a1a2e;
+  border: 1px solid #4ade80;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 14px;
+  padding: 2px 6px;
+  width: 100%;
+  outline: none;
+  font-family: inherit;
 }
 
 .todo-date {
@@ -2844,6 +2857,37 @@
 .todo-done .todo-description {
   text-decoration: line-through;
   color: #888;
+}
+
+.todo-done-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  margin-top: 8px;
+  cursor: pointer;
+  color: #888;
+  font-size: 13px;
+  user-select: none;
+  border-top: 1px solid #333;
+}
+
+.todo-done-header:hover {
+  color: #ccc;
+}
+
+.todo-done-chevron {
+  font-size: 10px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+
+.todo-done-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.todo-done-list {
+  opacity: 0.7;
 }
 
 /* Recitations */

@@ -320,17 +320,25 @@ if (existsSync(SIGNAL_FILE)) {
 console.log('[Watcher] Starting restart watcher...');
 console.log(`[Watcher] Watching for signal file: ${SIGNAL_FILE}`);
 
-// Create a directory watcher
-const watcher = watch(WORKING_DIR, (_eventType, filename) => {
-  if (filename === '.restart-signal' && existsSync(SIGNAL_FILE) && !restartInProgress) {
-    // Remove the signal file
+/** Checks for the signal file and triggers a restart if found. */
+function checkSignalFile() {
+  if (existsSync(SIGNAL_FILE) && !restartInProgress) {
     try {
       unlinkSync(SIGNAL_FILE);
     } catch { /* ignore */ }
-
     restart();
   }
+}
+
+// Create a directory watcher (primary detection)
+const watcher = watch(WORKING_DIR, (_eventType, filename) => {
+  if (filename === '.restart-signal') {
+    checkSignalFile();
+  }
 });
+
+// Poll as fallback in case fs.watch misses events
+const pollInterval = setInterval(checkSignalFile, 2000);
 
 // Kill any existing processes on our ports and wait until they're free
 killProcessesOnPorts();
@@ -354,6 +362,7 @@ function killAppForShutdown() {
 process.on('SIGINT', () => {
   console.log('[Watcher] Shutting down...');
   stopHeartbeatMonitor();
+  clearInterval(pollInterval);
   watcher.close();
   killAppForShutdown();
   process.exit(0);
@@ -362,6 +371,7 @@ process.on('SIGINT', () => {
 process.on('SIGTERM', () => {
   console.log('[Watcher] Shutting down...');
   stopHeartbeatMonitor();
+  clearInterval(pollInterval);
   watcher.close();
   killAppForShutdown();
   process.exit(0);

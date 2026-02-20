@@ -489,8 +489,13 @@ function App() {
 
   // Todo state
   const [todos, setTodos] = useState<TodoItem[]>([])
+  const [doneTodos, setDoneTodos] = useState<TodoItem[]>([])
+  const [showDoneTodos, setShowDoneTodos] = useState(false)
+  const [loadingDoneTodos, setLoadingDoneTodos] = useState(false)
   const [newTodoDescription, setNewTodoDescription] = useState('')
   const [loadingTodos, setLoadingTodos] = useState(false)
+  const [editingTodoId, setEditingTodoId] = useState<string | null>(null)
+  const [editingTodoText, setEditingTodoText] = useState('')
 
   // Recitations state
   const [recitations, setRecitations] = useState<RecitationItem[]>([])
@@ -1086,11 +1091,11 @@ function App() {
 
   // --- Todo data fetching ---
 
-  /** Fetches all todos from the API. */
+  /** Fetches pending todos from the API. */
   const fetchTodos = useCallback(async () => {
     setLoadingTodos(true)
     try {
-      const apiUrl = `http://${window.location.hostname}:4001/todos`
+      const apiUrl = `http://${window.location.hostname}:4001/todos?done=false`
       const response = await fetch(apiUrl)
       if (response.ok) {
         const data = await response.json()
@@ -1100,6 +1105,23 @@ function App() {
       console.error('Failed to fetch todos:', error)
     } finally {
       setLoadingTodos(false)
+    }
+  }, [])
+
+  /** Fetches done todos from the API. */
+  const fetchDoneTodos = useCallback(async () => {
+    setLoadingDoneTodos(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/todos?done=true`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setDoneTodos(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch done todos:', error)
+    } finally {
+      setLoadingDoneTodos(false)
     }
   }, [])
 
@@ -1133,24 +1155,51 @@ function App() {
       })
       if (response.ok) {
         fetchTodos()
+        if (showDoneTodos) fetchDoneTodos()
       }
     } catch (error) {
       console.error('Failed to toggle todo:', error)
     }
-  }, [fetchTodos])
+  }, [fetchTodos, fetchDoneTodos, showDoneTodos])
 
   /** Deletes a todo. */
-  const handleDeleteTodo = useCallback(async (id: string) => {
+  const handleDeleteTodo = useCallback(async (id: string, isDone: boolean) => {
     try {
       const apiUrl = `http://${window.location.hostname}:4001/todos/${id}`
       const response = await fetch(apiUrl, { method: 'DELETE' })
       if (response.ok) {
-        fetchTodos()
+        if (isDone) {
+          if (showDoneTodos) fetchDoneTodos()
+        } else {
+          fetchTodos()
+        }
       }
     } catch (error) {
       console.error('Failed to delete todo:', error)
     }
-  }, [fetchTodos])
+  }, [fetchTodos, fetchDoneTodos, showDoneTodos])
+
+  /** Updates a todo's description. */
+  const handleUpdateTodoDescription = useCallback(async (id: string, description: string, isDone: boolean) => {
+    if (!description.trim()) return
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/todos/${id}`
+      const response = await fetch(apiUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: description.trim() }),
+      })
+      if (response.ok) {
+        if (isDone) {
+          fetchDoneTodos()
+        } else {
+          fetchTodos()
+        }
+      }
+    } catch (error) {
+      console.error('Failed to update todo description:', error)
+    }
+  }, [fetchTodos, fetchDoneTodos])
 
   // --- Recitations data fetching ---
 
@@ -3576,21 +3625,124 @@ function App() {
           {todos.length > 0 && (
             <div className="todo-list">
               {todos.map(todo => (
-                <div key={todo.id} className={`todo-item ${todo.done ? 'todo-done' : ''}`}>
+                <div key={todo.id} className="todo-item">
                   <input
                     type="checkbox"
                     className="todo-checkbox"
-                    checked={todo.done}
-                    onChange={() => handleToggleTodo(todo.id, !todo.done)}
-                    title={todo.done ? 'Mark as pending' : 'Mark as done'}
+                    checked={false}
+                    onChange={() => handleToggleTodo(todo.id, true)}
+                    title="Mark as done"
                   />
                   <div className="todo-item-content">
-                    <span className="todo-description">{todo.description}</span>
+                    {editingTodoId === todo.id ? (
+                      <input
+                        className="todo-edit-input"
+                        type="text"
+                        value={editingTodoText}
+                        onChange={e => setEditingTodoText(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            handleUpdateTodoDescription(todo.id, editingTodoText, false)
+                            setEditingTodoId(null)
+                          } else if (e.key === 'Escape') {
+                            setEditingTodoId(null)
+                          }
+                        }}
+                        onBlur={() => {
+                          if (editingTodoText.trim() && editingTodoText.trim() !== todo.description) {
+                            handleUpdateTodoDescription(todo.id, editingTodoText, false)
+                          }
+                          setEditingTodoId(null)
+                        }}
+                        autoFocus
+                      />
+                    ) : (
+                      <span
+                        className="todo-description"
+                        onClick={() => { setEditingTodoId(todo.id); setEditingTodoText(todo.description) }}
+                      >
+                        {todo.description}
+                      </span>
+                    )}
                     <span className="todo-date">{formatDate(todo.createdAt)}</span>
                   </div>
                   <button
                     className="todo-delete-button"
-                    onClick={() => handleDeleteTodo(todo.id)}
+                    onClick={() => handleDeleteTodo(todo.id, false)}
+                    title="Delete todo"
+                  >
+                    &times;
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div
+            className="todo-done-header"
+            onClick={() => {
+              const next = !showDoneTodos
+              setShowDoneTodos(next)
+              if (next) fetchDoneTodos()
+            }}
+          >
+            <span className={`todo-done-chevron ${showDoneTodos ? 'expanded' : ''}`}>&#9654;</span>
+            Done{doneTodos.length > 0 && showDoneTodos ? ` (${doneTodos.length})` : ''}
+          </div>
+
+          {showDoneTodos && (
+            <div className="todo-list todo-done-list">
+              {loadingDoneTodos && doneTodos.length === 0 && (
+                <div className="welcome-message">Loading...</div>
+              )}
+              {!loadingDoneTodos && doneTodos.length === 0 && (
+                <div className="welcome-message">No completed todos.</div>
+              )}
+              {doneTodos.map(todo => (
+                <div key={todo.id} className="todo-item todo-done">
+                  <input
+                    type="checkbox"
+                    className="todo-checkbox"
+                    checked={true}
+                    onChange={() => handleToggleTodo(todo.id, false)}
+                    title="Mark as pending"
+                  />
+                  <div className="todo-item-content">
+                    {editingTodoId === todo.id ? (
+                      <input
+                        className="todo-edit-input"
+                        type="text"
+                        value={editingTodoText}
+                        onChange={e => setEditingTodoText(e.target.value)}
+                        onKeyDown={e => {
+                          if (e.key === 'Enter') {
+                            handleUpdateTodoDescription(todo.id, editingTodoText, true)
+                            setEditingTodoId(null)
+                          } else if (e.key === 'Escape') {
+                            setEditingTodoId(null)
+                          }
+                        }}
+                        onBlur={() => {
+                          if (editingTodoText.trim() && editingTodoText.trim() !== todo.description) {
+                            handleUpdateTodoDescription(todo.id, editingTodoText, true)
+                          }
+                          setEditingTodoId(null)
+                        }}
+                        autoFocus
+                      />
+                    ) : (
+                      <span
+                        className="todo-description"
+                        onClick={() => { setEditingTodoId(todo.id); setEditingTodoText(todo.description) }}
+                      >
+                        {todo.description}
+                      </span>
+                    )}
+                    <span className="todo-date">{formatDate(todo.createdAt)}</span>
+                  </div>
+                  <button
+                    className="todo-delete-button"
+                    onClick={() => handleDeleteTodo(todo.id, true)}
                     title="Delete todo"
                   >
                     &times;
