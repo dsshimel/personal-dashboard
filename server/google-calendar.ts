@@ -116,6 +116,10 @@ async function doFetchUpcomingEvents(weeks: number, redirectUri?: string): Promi
       clearTokens();
       throw new Error('Google authentication expired. Please reconnect.');
     }
+    if (err?.response?.status === 403 && /insufficient.*scop/i.test(err?.message || '')) {
+      clearTokens();
+      throw new Error('Google Calendar scope not granted. Please reconnect your Google account to authorize calendar access.');
+    }
     throw err;
   }
 }

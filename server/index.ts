@@ -18,7 +18,7 @@ import { initRecitationsDb, listRecitations, createRecitation, updateRecitation,
 import { initResearchDb, listTopics, createTopic, updateTopic, deleteTopic, listArticles, deleteArticle, generateResearchArticles } from './research.js';
 import { initFeatureFlagsDb, listFeatureFlags, toggleFeatureFlag } from './feature-flags.js';
 import { initGoogleAuthDb, getGoogleAuthStatus, getGoogleAuthUrl, handleGoogleCallback, clearTokens as clearGoogleTokens, fetchGoogleContacts, getRandomGoogleContacts } from './google-contacts.js';
-import { fetchUpcomingEvents } from './google-calendar.js';
+import { fetchUpcomingEvents, clearCalendarCache } from './google-calendar.js';
 import { getWeatherLocation, setWeatherLocation, geocodeLocation, fetchConfiguredWeather } from './weather.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
@@ -216,6 +216,33 @@ app.post('/grafana/restart', async (_req, res) => {
   } catch (error) {
     console.error('Failed to restart Grafana:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to restart Grafana' });
+  }
+});
+
+// Git pull to update the codebase
+app.post('/git/pull', async (_req, res) => {
+  console.log('Git pull requested...');
+  try {
+    const proc = Bun.spawn(['git', 'pull'], {
+      cwd: import.meta.dir + '/..',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+    if (exitCode === 0) {
+      console.log('Git pull succeeded:', stdout.trim());
+      res.json({ status: 'ok', output: stdout.trim() });
+    } else {
+      console.error('Git pull failed:', stderr);
+      res.status(500).json({ error: stderr.trim() || 'Git pull failed' });
+    }
+  } catch (error) {
+    console.error('Git pull failed:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Git pull failed' });
   }
 });
 
@@ -509,8 +536,9 @@ app.get('/google/contacts/random', async (_req, res) => {
 });
 
 // List upcoming Google Calendar events
-app.get('/google/calendar/events', async (_req, res) => {
+app.get('/google/calendar/events', async (req, res) => {
   try {
+    if (req.query.refresh === 'true') clearCalendarCache();
     const events = await fetchUpcomingEvents(4, OAUTH_REDIRECT_URI);
     res.json(events);
   } catch (error: any) {

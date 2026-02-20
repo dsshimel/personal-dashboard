@@ -1643,10 +1643,11 @@ function App() {
     }
   }, [])
 
-  const fetchCalendarEvents = useCallback(async () => {
+  const fetchCalendarEvents = useCallback(async (refresh = false) => {
     setLoadingCalendarEvents(true)
     try {
-      const res = await fetch(`http://${window.location.hostname}:4001/google/calendar/events`)
+      const url = `http://${window.location.hostname}:4001/google/calendar/events${refresh ? '?refresh=true' : ''}`
+      const res = await fetch(url)
       if (res.ok) {
         setCalendarEvents(await res.json())
       } else if (res.status === 401) {
@@ -2695,6 +2696,27 @@ function App() {
             Restart Grafana
           </button>
           <button
+            onClick={async () => {
+              try {
+                const response = await fetch(`http://${window.location.hostname}:4001/git/pull`, { method: 'POST' })
+                if (response.ok) {
+                  const data = await response.json()
+                  console.log(`Git pull: ${data.output}`)
+                } else {
+                  const data = await response.json()
+                  console.error(`Git pull failed: ${data.error}`)
+                }
+              } catch (error) {
+                console.error('Git pull failed')
+              }
+              setSidebarOpen(false)
+            }}
+            className="restart-button"
+            title="Pull latest code from GitHub"
+          >
+            Git Pull
+          </button>
+          <button
             onClick={() => { handleRestart(); setSidebarOpen(false) }}
             className="restart-button"
             title="Restart server"
@@ -3307,9 +3329,19 @@ function App() {
             <>
               <div className="calendar-header">
                 <h3>Upcoming Events</h3>
-                <span className="calendar-event-count">
-                  {calendarEvents.length} event{calendarEvents.length !== 1 ? 's' : ''}
-                </span>
+                <div className="calendar-header-actions">
+                  <span className="calendar-event-count">
+                    {calendarEvents.length} event{calendarEvents.length !== 1 ? 's' : ''}
+                  </span>
+                  <button
+                    className="calendar-refresh-btn"
+                    onClick={() => fetchCalendarEvents(true)}
+                    disabled={loadingCalendarEvents}
+                    title="Refresh calendar events"
+                  >
+                    {loadingCalendarEvents ? '\u21BB' : '\u21BB'}
+                  </button>
+                </div>
               </div>
               {loadingCalendarEvents && calendarEvents.length === 0 ? (
                 <div className="welcome-message">Loading calendar events...</div>

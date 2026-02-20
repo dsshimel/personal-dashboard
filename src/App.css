@@ -2457,9 +2457,45 @@
   font-size: 16px;
 }
 
+.calendar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .calendar-event-count {
   color: #888;
   font-size: 13px;
+}
+
+.calendar-refresh-btn {
+  background: none;
+  border: 1px solid #444;
+  color: #aaa;
+  cursor: pointer;
+  font-size: 16px;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.calendar-refresh-btn:hover:not(:disabled) {
+  color: #e0e0e0;
+  border-color: #666;
+}
+
+.calendar-refresh-btn:disabled {
+  cursor: default;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .calendar-events-list {
