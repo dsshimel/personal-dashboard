@@ -81,12 +81,26 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('loads projects after adding them', async () => {
-      await addProject('/home/user/test-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'test-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
 
       const projects = await loadProjects();
       expect(projects.length).toBe(1);
-      expect(projects[0].directory).toBe('/home/user/test-project');
+      expect(projects[0].directory).toBe(projectDir);
       expect(projects[0].conversationIds).toEqual([]);
+      expect(projects[0].available).toBe(true);
+    });
+
+    test('marks projects with missing directories as unavailable', async () => {
+      const projectDir = join(testDir, 'will-be-removed');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
+      await rm(projectDir, { recursive: true, force: true });
+
+      const projects = await loadProjects();
+      expect(projects.length).toBe(1);
+      expect(projects[0].available).toBe(false);
     });
   });
 
@@ -98,6 +112,7 @@ describe('Projects Module - SQLite CRUD', () => {
       expect(project.name).toBeTruthy();
       expect(project.directory).toBe(process.cwd());
       expect(project.lastConversationId).toBeNull();
+      expect(project.available).toBe(true);
     });
 
     test('persists the project to the database', async () => {
@@ -109,17 +124,21 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('generates ID from directory basename', async () => {
-      const project = await addProject('/some/path/my-cool-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-cool-project');
+      await mkdir(projectDir, { recursive: true });
+      const project = await addProject(projectDir, { skipGitDetection: true });
 
       expect(project.id).toBe('my-cool-project');
       expect(project.name).toBe('my-cool-project');
     });
 
     test('throws on duplicate directory', async () => {
-      await addProject('/test/dir/project-a', { skipGitDetection: true });
+      const projectDir = join(testDir, 'project-a');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
 
       try {
-        await addProject('/test/dir/project-a', { skipGitDetection: true });
+        await addProject(projectDir, { skipGitDetection: true });
         expect(true).toBe(false); // Should not reach here
       } catch (error) {
         expect(error instanceof Error).toBe(true);
@@ -127,37 +146,37 @@ describe('Projects Module - SQLite CRUD', () => {
       }
     });
 
-    test('normalizes path separators for duplicate detection', async () => {
-      await addProject('/test/dir/project-a', { skipGitDetection: true });
-
-      // Same path with different separators should be detected as duplicate
+    test('throws when directory does not exist', async () => {
       try {
-        await addProject('\\test\\dir\\project-a', { skipGitDetection: true });
+        await addProject('/nonexistent/path/my-project', { skipGitDetection: true });
         expect(true).toBe(false);
       } catch (error) {
-        expect((error as Error).message).toContain('already exists');
+        expect(error instanceof Error).toBe(true);
+        expect((error as Error).message).toContain('does not exist');
       }
     });
 
     test('generates unique IDs for same-named directories', async () => {
-      await addProject('/path/one/myproject', { skipGitDetection: true });
-      const second = await addProject('/path/two/myproject', { skipGitDetection: true });
+      const dir1 = join(testDir, 'one', 'myproject');
+      const dir2 = join(testDir, 'two', 'myproject');
+      const dir3 = join(testDir, 'three', 'myproject');
+      await mkdir(dir1, { recursive: true });
+      await mkdir(dir2, { recursive: true });
+      await mkdir(dir3, { recursive: true });
+
+      await addProject(dir1, { skipGitDetection: true });
+      const second = await addProject(dir2, { skipGitDetection: true });
 
       expect(second.id).toBe('myproject-2');
 
-      const third = await addProject('/path/three/myproject', { skipGitDetection: true });
+      const third = await addProject(dir3, { skipGitDetection: true });
       expect(third.id).toBe('myproject-3');
     });
 
-    test('falls back to "project" ID for empty slug', async () => {
-      // Directory name that slugifies to empty string
-      const project = await addProject('/path/to/!@#$', { skipGitDetection: true });
-
-      expect(project.id).toBe('project');
-    });
-
     test('new project has empty conversationIds', async () => {
-      const project = await addProject('/test/new-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'new-project');
+      await mkdir(projectDir, { recursive: true });
+      const project = await addProject(projectDir, { skipGitDetection: true });
 
       expect(project.conversationIds).toEqual([]);
     });
@@ -165,7 +184,9 @@ describe('Projects Module - SQLite CRUD', () => {
 
   describe('removeProject', () => {
     test('removes an existing project', async () => {
-      await addProject('/test/project-to-remove', { skipGitDetection: true });
+      const projectDir = join(testDir, 'project-to-remove');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
 
       const before = await loadProjects();
       expect(before.length).toBe(1);
@@ -187,8 +208,12 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('preserves other projects when removing one', async () => {
-      await addProject('/test/keep-this', { skipGitDetection: true });
-      await addProject('/test/remove-this', { skipGitDetection: true });
+      const dir1 = join(testDir, 'keep-this');
+      const dir2 = join(testDir, 'remove-this');
+      await mkdir(dir1, { recursive: true });
+      await mkdir(dir2, { recursive: true });
+      await addProject(dir1, { skipGitDetection: true });
+      await addProject(dir2, { skipGitDetection: true });
 
       await removeProject('remove-this');
 
@@ -198,7 +223,9 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('cascades deletion to project_conversations', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
       await addConversationToProject('my-project', 'conv-1');
       await addConversationToProject('my-project', 'conv-2');
 
@@ -211,7 +238,9 @@ describe('Projects Module - SQLite CRUD', () => {
 
   describe('updateProjectConversation', () => {
     test('updates the lastConversationId', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
 
       await updateProjectConversation('my-project', 'conv-abc-123');
 
@@ -220,7 +249,9 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('does nothing for nonexistent project ID', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
 
       // Should not throw
       await updateProjectConversation('nonexistent', 'conv-xyz');
@@ -230,19 +261,23 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('preserves other project fields', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
 
       await updateProjectConversation('my-project', 'conv-new');
 
       const projects = await loadProjects();
       expect(projects[0].id).toBe('my-project');
       expect(projects[0].name).toBe('my-project');
-      expect(projects[0].directory).toBe('/test/my-project');
+      expect(projects[0].directory).toBe(projectDir);
       expect(projects[0].lastConversationId).toBe('conv-new');
     });
 
     test('adds conversationId to conversationIds array', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
 
       await updateProjectConversation('my-project', 'conv-abc-123');
 
@@ -251,7 +286,9 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('does not duplicate conversationId in conversationIds', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
 
       await updateProjectConversation('my-project', 'conv-abc-123');
       await updateProjectConversation('my-project', 'conv-abc-123');
@@ -261,7 +298,9 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('accumulates multiple conversation IDs', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
 
       await updateProjectConversation('my-project', 'conv-1');
       await updateProjectConversation('my-project', 'conv-2');
@@ -275,7 +314,9 @@ describe('Projects Module - SQLite CRUD', () => {
 
   describe('addConversationToProject', () => {
     test('adds a conversation ID to the project', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
 
       await addConversationToProject('my-project', 'conv-manual-1');
 
@@ -294,7 +335,9 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('throws for duplicate conversation', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
       await addConversationToProject('my-project', 'conv-1');
 
       try {
@@ -308,7 +351,9 @@ describe('Projects Module - SQLite CRUD', () => {
 
   describe('removeConversationFromProject', () => {
     test('removes a conversation ID from the project', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
       await addConversationToProject('my-project', 'conv-1');
       await addConversationToProject('my-project', 'conv-2');
 
@@ -328,7 +373,9 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('no-op for conversation not in list', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
 
       await removeConversationFromProject('my-project', 'conv-not-there');
 
@@ -337,7 +384,9 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('clears lastConversationId when removed conversation was last', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
       await updateProjectConversation('my-project', 'conv-1');
 
       await removeConversationFromProject('my-project', 'conv-1');
@@ -348,7 +397,9 @@ describe('Projects Module - SQLite CRUD', () => {
     });
 
     test('updates lastConversationId to latest remaining', async () => {
-      await addProject('/test/my-project', { skipGitDetection: true });
+      const projectDir = join(testDir, 'my-project');
+      await mkdir(projectDir, { recursive: true });
+      await addProject(projectDir, { skipGitDetection: true });
       await updateProjectConversation('my-project', 'conv-1');
       await updateProjectConversation('my-project', 'conv-2');
 

@@ -27,6 +27,8 @@ export interface Project {
   lastConversationId: string | null;
   /** Explicit list of conversation IDs associated with this project. */
   conversationIds: string[];
+  /** Whether the project directory exists on this machine. */
+  available: boolean;
 }
 
 /**
@@ -137,6 +139,7 @@ function rowToProject(row: ProjectRow, conversationIds: string[]): Project {
     githubUrl: row.github_url,
     lastConversationId: row.last_conversation_id,
     conversationIds,
+    available: existsSync(row.directory),
   };
 }
 
@@ -220,6 +223,11 @@ export async function detectGitHubUrl(directory: string): Promise<string | null>
 export async function addProject(directory: string, options?: { skipGitDetection?: boolean }): Promise<Project> {
   const db = getDb();
 
+  // Validate that the directory exists on this machine
+  if (!existsSync(directory)) {
+    throw new Error(`Directory does not exist: ${directory}`);
+  }
+
   // Normalize path separators
   const normalizedDir = directory.replace(/\\/g, '/');
 
@@ -254,6 +262,7 @@ export async function addProject(directory: string, options?: { skipGitDetection
     githubUrl,
     lastConversationId: null,
     conversationIds: [],
+    available: true,
   };
 }
 

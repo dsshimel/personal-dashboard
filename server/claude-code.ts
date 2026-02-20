@@ -7,6 +7,8 @@
 
 import { EventEmitter } from 'events';
 
+const CLAUDE_PATH = Bun.which('claude') || 'claude';
+
 /**
  * Message format from Claude CLI's stream-json output.
  * Different types indicate different stages of the conversation.
@@ -255,7 +257,7 @@ export class ClaudeCodeManager extends EventEmitter {
     console.log('[ClaudeCode] Working directory:', this.workingDirectory);
 
     // Use Bun.spawn for better Windows compatibility
-    this.currentProcess = Bun.spawn(['claude', ...args], {
+    this.currentProcess = Bun.spawn([CLAUDE_PATH, ...args], {
       cwd: this.workingDirectory,
       stdout: 'pipe',
       stderr: 'pipe',

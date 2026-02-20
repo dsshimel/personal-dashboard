@@ -136,6 +136,8 @@ interface Project {
   lastConversationId: string | null
   /** Explicit list of conversation IDs associated with this project. */
   conversationIds: string[]
+  /** Whether the project directory exists on this machine. */
+  available: boolean
 }
 
 /** Represents a webcam device detected by FFmpeg. */
@@ -940,15 +942,33 @@ function App() {
       const apiUrl = `http://${window.location.hostname}:4001/projects`
       const response = await fetch(apiUrl)
       if (response.ok) {
-        const data = await response.json()
+        const data: Project[] = await response.json()
         setProjects(data)
+
+        // Reconcile restored tabs: update workingDirectory to match the server's
+        // project directory (handles cross-machine synced databases where paths differ)
+        setTerminalTabs(prev => {
+          let changed = false
+          const updated = prev.map(tab => {
+            const project = data.find(p => p.id === tab.projectId)
+            if (project && project.available && tab.workingDirectory !== project.directory) {
+              changed = true
+              return { ...tab, workingDirectory: project.directory }
+            }
+            return tab
+          })
+          if (changed) {
+            persistTabs(updated, activeTerminalTabIdRef.current)
+          }
+          return changed ? updated : prev
+        })
       }
     } catch (error) {
       console.error('Failed to fetch projects:', error)
     } finally {
       setLoadingProjects(false)
     }
-  }, [])
+  }, [persistTabs])
 
   /** Adds a new project by directory path. */
   const handleAddProject = useCallback(async () => {
@@ -3150,15 +3170,20 @@ function App() {
 
           {projects.length > 0 && (
             <div className="projects-list">
-              {projects.map(project => {
+              {[...projects].sort((a, b) => (b.available ? 1 : 0) - (a.available ? 1 : 0)).map(project => {
                 const isOpen = terminalTabs.some(t => t.projectId === project.id)
                 return (
                   <div
                     key={project.id}
-                    className={`project-card ${isOpen ? 'active' : ''}`}
+                    className={`project-card ${isOpen ? 'active' : ''}${!project.available ? ' unavailable' : ''}`}
                   >
                     <div className="project-card-header">
-                      <div className="project-card-name">{project.name}</div>
+                      <div className="project-card-name">
+                        {project.name}
+                        {!project.available && (
+                          <span className="project-unavailable-badge" title="Directory not found on this machine"> (unavailable)</span>
+                        )}
+                      </div>
                       <div className="project-card-actions">
                         {isOpen ? (
                           <button
@@ -3171,6 +3196,7 @@ function App() {
                           <button
                             className="project-switch-button"
                             onClick={() => handleActivateProject(project)}
+                            disabled={!project.available}
                           >
                             Open
                           </button>

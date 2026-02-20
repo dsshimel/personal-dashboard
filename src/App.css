@@ -1559,6 +1559,15 @@
   border-color: #4ade80;
 }
 
+.project-card.unavailable {
+  opacity: 0.5;
+}
+
+.project-unavailable-badge {
+  color: #f87171;
+  font-size: 0.75em;
+}
+
 .project-card-header {
   display: flex;
   justify-content: space-between;
