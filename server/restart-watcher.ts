@@ -241,7 +241,9 @@ function startApp() {
   appProcess = spawn('bun', ['run', 'prod:all'], {
     cwd: WORKING_DIR,
     stdio: 'inherit',
-    shell: true
+    shell: true,
+    detached: true,
+    windowsHide: true,
   });
 
   appProcess.on('exit', (code) => {
@@ -253,24 +255,54 @@ function startApp() {
   startHeartbeatMonitor();
 }
 
+/**
+ * Kills the entire process group of the app process.
+ * Using negative PID sends the signal to all processes in the group,
+ * which includes children spawned by concurrently via shell: true.
+ */
+async function killAppProcessTree(): Promise<void> {
+  if (!appProcess || !appProcess.pid) return;
+
+  const pid = appProcess.pid;
+  console.log(`[Watcher] Killing process group for PID ${pid}...`);
+
+  if (isWindows) {
+    try {
+      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore' });
+    } catch { /* ignore */ }
+  } else {
+    // Send SIGTERM to the entire process group first for graceful shutdown
+    try {
+      process.kill(-pid, 'SIGTERM');
+    } catch { /* ignore - group may not exist */ }
+
+    // Wait briefly for graceful shutdown
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    // Force kill the process group if still alive
+    try {
+      process.kill(-pid, 'SIGKILL');
+    } catch { /* ignore - already dead */ }
+  }
+
+  // Wait for the process to actually exit
+  if (appProcess) {
+    await new Promise<void>(resolve => {
+      const timeout = setTimeout(() => resolve(), 5000);
+      appProcess!.on('exit', () => { clearTimeout(timeout); resolve(); });
+    });
+  }
+  appProcess = null;
+}
+
 /** Handles restart by stopping current app, killing ports, and restarting. */
 async function restart() {
   console.log('[Watcher] Restart triggered!');
   restartInProgress = true;
   stopHeartbeatMonitor();
 
-  // Kill the current app process tree
-  if (appProcess) {
-    console.log('[Watcher] Stopping current app...');
-    if (isWindows) {
-      try {
-        execSync(`taskkill /F /T /PID ${appProcess.pid}`, { stdio: 'ignore' });
-      } catch { /* ignore */ }
-    } else {
-      appProcess.kill('SIGKILL');
-    }
-    appProcess = null;
-  }
+  // Kill the current app process tree (entire process group)
+  await killAppProcessTree();
 
   // Kill any remaining processes on our ports and wait until they're actually free
   killProcessesOnPorts();
@@ -306,20 +338,24 @@ waitForPortsFree(APP_PORTS).then(() => {
   startApp();
 });
 
+/** Kills the app process group during shutdown. */
+function killAppForShutdown() {
+  if (!appProcess?.pid) return;
+  if (isWindows) {
+    try {
+      execSync(`taskkill /F /T /PID ${appProcess.pid}`, { stdio: 'ignore' });
+    } catch { /* ignore */ }
+  } else {
+    try { process.kill(-appProcess.pid, 'SIGTERM'); } catch { /* ignore */ }
+  }
+}
+
 // Handle graceful shutdown
 process.on('SIGINT', () => {
   console.log('[Watcher] Shutting down...');
   stopHeartbeatMonitor();
   watcher.close();
-  if (appProcess) {
-    if (isWindows) {
-      try {
-        execSync(`taskkill /F /T /PID ${appProcess.pid}`, { stdio: 'ignore' });
-      } catch { /* ignore */ }
-    } else {
-      appProcess.kill('SIGTERM');
-    }
-  }
+  killAppForShutdown();
   process.exit(0);
 });
 
@@ -327,14 +363,6 @@ process.on('SIGTERM', () => {
   console.log('[Watcher] Shutting down...');
   stopHeartbeatMonitor();
   watcher.close();
-  if (appProcess) {
-    if (isWindows) {
-      try {
-        execSync(`taskkill /F /T /PID ${appProcess.pid}`, { stdio: 'ignore' });
-      } catch { /* ignore */ }
-    } else {
-      appProcess.kill('SIGTERM');
-    }
-  }
+  killAppForShutdown();
   process.exit(0);
 });
