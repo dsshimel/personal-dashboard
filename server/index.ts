@@ -10,21 +10,23 @@ import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { ClaudeCodeManager } from './claude-code.js';
-import { loadProjects, addProject, removeProject, updateProjectConversation, listProjectConversations, addConversationToProject, removeConversationFromProject, initProjectsDb } from './projects.js';
+import { loadProjects, addProject, removeProject, updateProjectConversation, listProjectConversations, addConversationToProject, removeConversationFromProject, initProjectsDb, isValidGitHubUrl, parseGitHubRepoName } from './projects.js';
 import { initCrmDb, listContacts, createContact, updateContact, deleteContact, listInteractions, createInteraction, deleteInteraction } from './crm.js';
 import { initTodoDb, listTodos, createTodo, updateTodo, deleteTodo } from './todo.js';
 import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest, generateBriefingPreview, getLatestBriefing, listBriefings } from './daily-email.js';
 import { initRecitationsDb, listRecitations, createRecitation, updateRecitation, deleteRecitation } from './recitations.js';
 import { initResearchDb, listTopics, createTopic, updateTopic, deleteTopic, listArticles, deleteArticle, generateResearchArticles } from './research.js';
-import { initFeatureFlagsDb, listFeatureFlags, toggleFeatureFlag } from './feature-flags.js';
-import { initGoogleAuthDb, getGoogleAuthStatus, getGoogleAuthUrl, handleGoogleCallback, clearTokens as clearGoogleTokens, fetchGoogleContacts, getRandomGoogleContacts } from './google-contacts.js';
+import { initFeatureFlagsDb, listFeatureFlags, toggleFeatureFlag, isFlagEnabled } from './feature-flags.js';
+import { initGoogleAuthDb, getGoogleAuthStatus, getGoogleAuthUrl, handleGoogleCallback, clearTokens as clearGoogleTokens, fetchGoogleContacts, getRandomGoogleContacts, isShellAuthorized } from './google-contacts.js';
+import { PtyManager } from './pty-manager.js';
 import { fetchUpcomingEvents, clearCalendarCache } from './google-calendar.js';
 import { getWeatherLocation, setWeatherLocation, geocodeLocation, fetchConfiguredWeather } from './weather.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
 import { metricsMiddleware, metricsHandler, clientMetricsHandler, wsConnectionsActive, wsMessagesTotal, claudeCommandDuration, claudeCommandsTotal, claudeSessionsActive } from './telemetry.js';
-import { readdir, readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { readdir, readFile, writeFile, stat } from 'fs/promises';
+import { existsSync } from 'fs';
+import { join, resolve, dirname } from 'path';
 import { homedir } from 'os';
 
 initLogger('main');
@@ -63,6 +65,9 @@ const connectionTabs = new Map<WebSocket, Set<string>>();
 
 /** Maps session IDs to their ClaudeCodeManager instances for reconnection support. */
 const sessionManagers = new Map<string, ClaudeCodeManager>();
+
+/** Maps tabId to their PtyManager instances for shell terminals. */
+const ptyManagers = new Map<string, PtyManager>();
 
 /** All connected clients for broadcasting server logs. */
 const allClients = new Set<WebSocket>();
@@ -276,6 +281,108 @@ app.post('/restart', async (_req, res) => {
   await writeFile(signalFile, new Date().toISOString());
 
   console.log('Restart signal sent to watcher');
+});
+
+// Browse server filesystem directories (for clone target selection)
+app.get('/filesystem/browse', async (req, res) => {
+  try {
+    const requestedPath = typeof req.query.path === 'string'
+      ? req.query.path
+      : homedir();
+
+    const resolved = resolve(requestedPath);
+
+    if (!existsSync(resolved)) {
+      res.status(404).json({ error: 'Directory not found' });
+      return;
+    }
+
+    const stats = await stat(resolved);
+    if (!stats.isDirectory()) {
+      res.status(400).json({ error: 'Path is not a directory' });
+      return;
+    }
+
+    const entries = await readdir(resolved, { withFileTypes: true });
+    const directories = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+      .map(e => ({
+        name: e.name,
+        path: join(resolved, e.name),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json({
+      current: resolved,
+      parent: dirname(resolved) !== resolved ? dirname(resolved) : null,
+      directories,
+    });
+  } catch (error) {
+    console.error('Error browsing filesystem:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to browse directory' });
+  }
+});
+
+// Clone a GitHub repo and create a project from it
+app.post('/projects/clone', async (req, res) => {
+  try {
+    const { url, parentDirectory } = req.body;
+
+    if (!url || typeof url !== 'string') {
+      res.status(400).json({ error: 'url is required' });
+      return;
+    }
+    if (!parentDirectory || typeof parentDirectory !== 'string') {
+      res.status(400).json({ error: 'parentDirectory is required' });
+      return;
+    }
+
+    if (!isValidGitHubUrl(url)) {
+      res.status(400).json({ error: 'Invalid GitHub URL. Expected format: https://github.com/owner/repo' });
+      return;
+    }
+
+    if (!existsSync(parentDirectory)) {
+      res.status(400).json({ error: `Parent directory does not exist: ${parentDirectory}` });
+      return;
+    }
+
+    const repoName = parseGitHubRepoName(url);
+    const targetDir = join(parentDirectory, repoName);
+
+    if (existsSync(targetDir)) {
+      res.status(400).json({ error: `Directory already exists: ${targetDir}` });
+      return;
+    }
+
+    console.log(`Cloning ${url} into ${targetDir}...`);
+
+    const proc = Bun.spawn(['git', 'clone', url, targetDir], {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+
+    const [exitCode, _stdout, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ]);
+
+    if (exitCode !== 0) {
+      console.error('Git clone failed:', stderr);
+      res.status(500).json({ error: stderr.trim() || 'Git clone failed' });
+      return;
+    }
+
+    console.log('Git clone succeeded:', stderr.trim());
+
+    const project = await addProject(targetDir);
+    console.log(`Project created from clone: ${project.name} (${project.directory})`);
+    res.json(project);
+  } catch (error) {
+    console.error('Error cloning repository:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to clone repository' });
+  }
 });
 
 // List all projects
@@ -503,6 +610,19 @@ app.post('/google/auth/disconnect', (_req, res) => {
   clearGoogleTokens();
   console.log('Google account disconnected');
   res.json({ status: 'ok' });
+});
+
+// Shell terminal authorization status
+app.get('/shell/auth-status', (_req, res) => {
+  const flagEnabled = isFlagEnabled('shell-terminal');
+  const authorized = isShellAuthorized();
+  res.json({
+    authorized: flagEnabled && authorized,
+    flagEnabled,
+    googleAuthed: getGoogleAuthStatus().authenticated,
+    emailMatch: authorized,
+    hasAuthorizedEmail: !!process.env.AUTHORIZED_EMAIL,
+  });
 });
 
 // List all Google Contacts
@@ -1334,8 +1454,72 @@ wss.on('connection', (ws) => {
           localTabManagers.delete(tabId);
           tabManagers.delete(tabId);
           localTabCleanups.delete(tabId);
+          // Also clean up PTY if this was a shell tab
+          const pty = ptyManagers.get(tabId);
+          if (pty) {
+            pty.kill();
+            ptyManagers.delete(tabId);
+          }
           connectionTabs.get(ws)?.delete(tabId);
           console.log(`[Server] Tab closed: ${tabId}`);
+          break;
+        }
+
+        case 'pty-start': {
+          if (!isFlagEnabled('shell-terminal') || !isShellAuthorized()) {
+            ws.send(JSON.stringify({ type: 'error', content: 'Shell terminal not authorized', tabId }));
+            break;
+          }
+          if (ptyManagers.has(tabId)) {
+            ws.send(JSON.stringify({ type: 'error', content: 'PTY already running for this tab', tabId }));
+            break;
+          }
+          const cols = typeof message.cols === 'number' ? message.cols : 80;
+          const rows = typeof message.rows === 'number' ? message.rows : 24;
+          const cwd = (message.cwd && typeof message.cwd === 'string') ? message.cwd : WORKING_DIR;
+          const pty = new PtyManager(cwd, cols, rows);
+          ptyManagers.set(tabId, pty);
+
+          pty.on('data', (data: string) => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'pty-output', tabId, data }));
+            }
+          });
+          pty.on('exit', () => {
+            ptyManagers.delete(tabId);
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'pty-exit', tabId }));
+            }
+          });
+
+          pty.spawn();
+          console.log(`[Server] PTY started for tab ${tabId} in ${cwd}`);
+          break;
+        }
+
+        case 'pty-input': {
+          const pty = ptyManagers.get(tabId);
+          if (pty && typeof message.data === 'string') {
+            pty.write(message.data);
+          }
+          break;
+        }
+
+        case 'pty-resize': {
+          const pty = ptyManagers.get(tabId);
+          if (pty && typeof message.cols === 'number' && typeof message.rows === 'number') {
+            pty.resize(message.cols, message.rows);
+          }
+          break;
+        }
+
+        case 'pty-stop': {
+          const pty = ptyManagers.get(tabId);
+          if (pty) {
+            pty.kill();
+            ptyManagers.delete(tabId);
+            console.log(`[Server] PTY stopped for tab ${tabId}`);
+          }
           break;
         }
 
@@ -1359,6 +1543,17 @@ wss.on('connection', (ws) => {
     for (const cleanup of localTabCleanups.values()) cleanup();
     localTabManagers.clear();
     localTabCleanups.clear();
+    // Kill PTY sessions for this connection's tabs
+    const tabs = connectionTabs.get(ws);
+    if (tabs) {
+      for (const tabId of tabs) {
+        const pty = ptyManagers.get(tabId);
+        if (pty) {
+          pty.kill();
+          ptyManagers.delete(tabId);
+        }
+      }
+    }
     connectionTabs.delete(ws);
   });
 

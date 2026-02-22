@@ -10,6 +10,9 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './App.css'
+import '@xterm/xterm/css/xterm.css'
+import { Terminal as XTerm } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
 import { initClientTelemetry, reportWsReconnect } from './telemetry'
 
 /**
@@ -162,6 +165,7 @@ interface PendingImage {
 /** State for a single terminal tab (one per active project). */
 interface TerminalTabState {
   id: string                    // unique tab ID, e.g. `tab-${projectId}`
+  type: 'claude' | 'shell'
   projectId: string
   projectName: string
   workingDirectory: string
@@ -176,6 +180,7 @@ interface TerminalTabState {
 /** Serializable subset of TerminalTabState for localStorage persistence. */
 interface StoredTerminalTab {
   id: string
+  type?: 'claude' | 'shell'
   projectId: string
   projectName: string
   workingDirectory: string
@@ -453,6 +458,22 @@ function App() {
   const [loadingProjects, setLoadingProjects] = useState(false)
   const [projectConversations, setProjectConversations] = useState<Session[]>([])
   const [loadingProjectConversations, setLoadingProjectConversations] = useState(false)
+  const [addProjectMode, setAddProjectMode] = useState<'existing' | 'clone'>('existing')
+  const [cloneUrl, setCloneUrl] = useState('')
+  const [cloneParentDir, setCloneParentDir] = useState('')
+  const [cloningProject, setCloningProject] = useState(false)
+  const [browseDirs, setBrowseDirs] = useState<Array<{ name: string; path: string }>>([])
+  const [browseCurrentPath, setBrowseCurrentPath] = useState('')
+  const [browseParentPath, setBrowseParentPath] = useState<string | null>(null)
+  const [showDirBrowser, setShowDirBrowser] = useState(false)
+  const [loadingDirs, setLoadingDirs] = useState(false)
+  const [pendingClonedProject, setPendingClonedProject] = useState<Project | null>(null)
+
+  // Shell terminal state
+  const [shellAuthorized, setShellAuthorized] = useState(false)
+  const xtermContainerRef = useRef<HTMLDivElement>(null)
+  const xtermRef = useRef<XTerm | null>(null)
+  const fitAddonRef = useRef<FitAddon | null>(null)
 
   // CRM state
   const [crmContacts, setCrmContacts] = useState<CrmContact[]>([])
@@ -582,6 +603,7 @@ function App() {
   const persistTabs = useCallback((tabs: TerminalTabState[], activeId: string | null) => {
     const stored: StoredTerminalTab[] = tabs.map(t => ({
       id: t.id,
+      type: t.type,
       projectId: t.projectId,
       projectName: t.projectName,
       workingDirectory: t.workingDirectory,
@@ -780,6 +802,16 @@ function App() {
               return updated
             })
             addTabMessage(tabId, 'status', `Conversation: ${data.content}`)
+            break
+          case 'pty-output':
+            // Write PTY output directly to xterm.js
+            if (xtermRef.current && activeTerminalTabIdRef.current === tabId) {
+              xtermRef.current.write(data.data)
+            }
+            break
+          case 'pty-exit':
+            addTabMessage(tabId, 'status', 'Shell exited')
+            updateTab(tabId, { status: 'connected' })
             break
         }
       } catch {
@@ -999,6 +1031,66 @@ function App() {
       addMessage('error', 'Failed to add project')
     }
   }, [newProjectPath, fetchProjects, addMessage])
+
+  /** Fetches directory listing from server for the clone directory picker. */
+  const handleBrowseDirectory = useCallback(async (path?: string) => {
+    setLoadingDirs(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/filesystem/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setBrowseDirs(data.directories)
+        setBrowseCurrentPath(data.current)
+        setBrowseParentPath(data.parent)
+        setCloneParentDir(data.current)
+        setShowDirBrowser(true)
+      } else {
+        const err = await response.json()
+        addMessage('error', `Failed to browse directory: ${err.error}`)
+      }
+    } catch (error) {
+      console.error('Failed to browse directory:', error)
+      addMessage('error', 'Failed to browse server filesystem')
+    } finally {
+      setLoadingDirs(false)
+    }
+  }, [addMessage])
+
+  /** Clones a GitHub repo and creates a project from it. */
+  const handleCloneProject = useCallback(async () => {
+    const url = cloneUrl.trim()
+    const parentDir = cloneParentDir.trim()
+    if (!url || !parentDir) return
+
+    setCloningProject(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/projects/clone`
+      const response = await fetch(apiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, parentDirectory: parentDir }),
+      })
+      if (response.ok) {
+        const project = await response.json()
+        setCloneUrl('')
+        setCloneParentDir('')
+        setShowDirBrowser(false)
+        setAddProjectMode('existing')
+        await fetchProjects()
+        // Queue auto-open of the cloned project (handled by effect below)
+        setPendingClonedProject(project)
+      } else {
+        const err = await response.json()
+        addMessage('error', `Failed to clone: ${err.error}`)
+      }
+    } catch (error) {
+      console.error('Failed to clone repository:', error)
+      addMessage('error', 'Failed to clone repository')
+    } finally {
+      setCloningProject(false)
+    }
+  }, [cloneUrl, cloneParentDir, fetchProjects, addMessage])
 
   /** Removes a project by ID. */
   const handleRemoveProject = useCallback(async (projectId: string) => {
@@ -1732,6 +1824,18 @@ function App() {
     }
   }, [])
 
+  const fetchShellAuthStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/shell/auth-status`)
+      if (res.ok) {
+        const data = await res.json()
+        setShellAuthorized(data.authorized)
+      }
+    } catch (error) {
+      console.error('Failed to fetch shell auth status:', error)
+    }
+  }, [])
+
   const fetchAllGoogleContacts = useCallback(async () => {
     setLoadingGoogleContacts(true)
     try {
@@ -1886,6 +1990,7 @@ function App() {
     // Create new tab
     const newTab: TerminalTabState = {
       id: tabId,
+      type: 'claude',
       projectId: project.id,
       projectName: project.name,
       workingDirectory: project.directory,
@@ -1963,6 +2068,151 @@ function App() {
     })
   }, [persistTabs, navigate])
 
+  /** Opens a shell terminal tab for a project. */
+  const handleOpenShell = useCallback((project: Project) => {
+    const tabId = `shell-${project.id}`
+
+    // Check if shell tab already exists
+    const existingTab = terminalTabs.find(t => t.id === tabId)
+    if (existingTab) {
+      setActiveTerminalTabId(tabId)
+      setActiveSubTab('terminal')
+      navigate('/')
+      return
+    }
+
+    const newTab: TerminalTabState = {
+      id: tabId,
+      type: 'shell',
+      projectId: project.id,
+      projectName: project.name,
+      workingDirectory: project.directory,
+      messages: [],
+      sessionId: null,
+      lastMessageId: 0,
+      status: 'connected',
+      currentTool: null,
+      pendingImages: [],
+    }
+
+    setTerminalTabs(prev => {
+      const next = [...prev, newTab]
+      persistTabs(next, tabId)
+      return next
+    })
+    setActiveTerminalTabId(tabId)
+    setActiveSubTab('terminal')
+    navigate('/')
+  }, [terminalTabs, persistTabs, navigate])
+
+  // Auto-open a newly cloned project
+  useEffect(() => {
+    if (pendingClonedProject) {
+      handleActivateProject(pendingClonedProject)
+      setPendingClonedProject(null)
+    }
+  }, [pendingClonedProject, handleActivateProject])
+
+  // xterm.js lifecycle: mount when a shell tab is active, unmount on cleanup
+  useEffect(() => {
+    const tab = activeTerminalTab
+    if (!tab || tab.type !== 'shell') {
+      // Clean up xterm if switching away from a shell tab
+      if (xtermRef.current) {
+        xtermRef.current.dispose()
+        xtermRef.current = null
+        fitAddonRef.current = null
+      }
+      return
+    }
+
+    // Wait for the container DOM element to be available
+    const container = xtermContainerRef.current
+    if (!container) return
+
+    const term = new XTerm({
+      cursorBlink: true,
+      fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, Monaco, monospace',
+      fontSize: 14,
+      theme: {
+        background: '#0f1629',
+        foreground: '#e0e0e0',
+        cursor: '#4ade80',
+        selectionBackground: '#2a3f5f',
+        black: '#1a1a2e',
+        red: '#f87171',
+        green: '#4ade80',
+        yellow: '#fbbf24',
+        blue: '#60a5fa',
+        magenta: '#c084fc',
+        cyan: '#22d3ee',
+        white: '#e0e0e0',
+        brightBlack: '#4a5568',
+        brightRed: '#fca5a5',
+        brightGreen: '#86efac',
+        brightYellow: '#fde68a',
+        brightBlue: '#93c5fd',
+        brightMagenta: '#d8b4fe',
+        brightCyan: '#67e8f9',
+        brightWhite: '#f8fafc',
+      },
+    })
+
+    const fitAddon = new FitAddon()
+    term.loadAddon(fitAddon)
+    term.open(container)
+    fitAddon.fit()
+
+    xtermRef.current = term
+    fitAddonRef.current = fitAddon
+
+    // Send pty-start to server
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'pty-start',
+        tabId: tab.id,
+        cwd: tab.workingDirectory,
+        cols: term.cols,
+        rows: term.rows,
+      }))
+    }
+
+    // Forward keystrokes to server
+    const onDataDisposable = term.onData((data) => {
+      const ws = wsRef.current
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'pty-input', tabId: tab.id, data }))
+      }
+    })
+
+    // Handle resize
+    const onResizeDisposable = term.onResize(({ cols, rows }) => {
+      const ws = wsRef.current
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'pty-resize', tabId: tab.id, cols, rows }))
+      }
+    })
+
+    // Fit on window resize
+    const handleWindowResize = () => fitAddon.fit()
+    window.addEventListener('resize', handleWindowResize)
+
+    return () => {
+      window.removeEventListener('resize', handleWindowResize)
+      onDataDisposable.dispose()
+      onResizeDisposable.dispose()
+      // Send pty-stop when leaving the tab
+      const ws = wsRef.current
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'pty-stop', tabId: tab.id }))
+      }
+      term.dispose()
+      xtermRef.current = null
+      fitAddonRef.current = null
+    }
+  }, [activeTerminalTab?.id, activeTerminalTab?.type])
+
   useEffect(() => {
     initClientTelemetry()
   }, [])
@@ -1994,6 +2244,7 @@ function App() {
         const stored: StoredTerminalTab[] = JSON.parse(storedJson)
         const restored: TerminalTabState[] = stored.map(s => ({
           id: s.id,
+          type: (s.type || 'claude') as 'claude' | 'shell',
           projectId: s.projectId,
           projectName: s.projectName,
           workingDirectory: s.workingDirectory,
@@ -2034,8 +2285,9 @@ function App() {
   useEffect(() => {
     if (activeSubTab === 'projects') {
       fetchProjects()
+      fetchShellAuthStatus()
     }
-  }, [activeSubTab, fetchProjects])
+  }, [activeSubTab, fetchProjects, fetchShellAuthStatus])
 
   // Fetch conversations when viewing projects tab and a project tab is selected
   useEffect(() => {
@@ -2125,8 +2377,9 @@ function App() {
         setGoogleAuthError(null)
       }
       fetchGoogleAuthStatus()
+      fetchShellAuthStatus()
     }
-  }, [fetchGoogleAuthStatus])
+  }, [fetchGoogleAuthStatus, fetchShellAuthStatus])
 
   // Keep selectedContact in sync with the contacts list (e.g. after interaction count changes)
   useEffect(() => {
@@ -2371,6 +2624,7 @@ function App() {
           // Create new tab for the project
           const newTab: TerminalTabState = {
             id: targetTabId,
+            type: 'claude',
             projectId: targetProject.id,
             projectName: targetProject.name,
             workingDirectory: targetProject.directory,
@@ -2934,7 +3188,7 @@ function App() {
                   className={`tab ${activeTerminalTabId === tab.id && activeSubTab === 'terminal' ? 'active' : ''} ${tab.status === 'processing' ? 'tab-processing' : ''}`}
                   onClick={() => { setActiveTerminalTabId(tab.id); setActiveSubTab('terminal'); navigate('/') }}
                 >
-                  {tab.projectName}
+                  {tab.type === 'shell' ? `$ ${tab.projectName}` : tab.projectName}
                   {tab.status === 'processing' && <span className="tab-processing-dot" />}
                   <span
                     className="tab-close-button"
@@ -2981,46 +3235,54 @@ function App() {
 
         {/* Terminal output - one div per tab, hidden when not active */}
         {terminalTabs.map(tab => (
-          <div
-            key={tab.id}
-            className={`terminal-output ${(activeTerminalTabId !== tab.id || activeSubTab !== 'terminal') ? 'tab-hidden' : ''}`}
-            ref={activeTerminalTabId === tab.id ? outputRef : undefined}
-            onScroll={activeTerminalTabId === tab.id ? handleTerminalScroll : undefined}
-          >
-            {tab.messages.length === 0 && (
-              <div className="welcome-message">
-                Terminal for {tab.projectName}.
-                <br />
-                Type a message to start a conversation with Claude.
-              </div>
-            )}
-            {tab.messages.map((msg, index) => {
-              const isReady = activeTerminalTabId === tab.id && index === readyMessageIndex && tab.status === 'connected'
-              return (
-                <div key={msg.id} className={`message message-${msg.type}${isReady ? ' message-ready' : ''}`}>
-                  {msg.type === 'input' && <span className="prompt">&gt; </span>}
-                  {msg.type === 'error' && <span className="error-prefix">[ERROR] </span>}
-                  {msg.type === 'status' && <span className="status-prefix">[STATUS] </span>}
-                  {msg.type === 'output' ? (
-                    <div className="message-content markdown-content">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                        {msg.content}
-                      </ReactMarkdown>
-                    </div>
-                  ) : (
-                    <span className="message-content">{msg.content}</span>
-                  )}
+          tab.type === 'shell' ? (
+            <div
+              key={tab.id}
+              className={`xterm-container ${(activeTerminalTabId !== tab.id || activeSubTab !== 'terminal') ? 'tab-hidden' : ''}`}
+              ref={activeTerminalTabId === tab.id ? xtermContainerRef : undefined}
+            />
+          ) : (
+            <div
+              key={tab.id}
+              className={`terminal-output ${(activeTerminalTabId !== tab.id || activeSubTab !== 'terminal') ? 'tab-hidden' : ''}`}
+              ref={activeTerminalTabId === tab.id ? outputRef : undefined}
+              onScroll={activeTerminalTabId === tab.id ? handleTerminalScroll : undefined}
+            >
+              {tab.messages.length === 0 && (
+                <div className="welcome-message">
+                  Terminal for {tab.projectName}.
+                  <br />
+                  Type a message to start a conversation with Claude.
                 </div>
-              )
-            })}
-            {tab.status === 'processing' && (
-              <div className="message message-tool">
-                <span className="tool-indicator">
-                  {tab.currentTool || 'Processing...'}
-                </span>
-              </div>
-            )}
-          </div>
+              )}
+              {tab.messages.map((msg, index) => {
+                const isReady = activeTerminalTabId === tab.id && index === readyMessageIndex && tab.status === 'connected'
+                return (
+                  <div key={msg.id} className={`message message-${msg.type}${isReady ? ' message-ready' : ''}`}>
+                    {msg.type === 'input' && <span className="prompt">&gt; </span>}
+                    {msg.type === 'error' && <span className="error-prefix">[ERROR] </span>}
+                    {msg.type === 'status' && <span className="status-prefix">[STATUS] </span>}
+                    {msg.type === 'output' ? (
+                      <div className="message-content markdown-content">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                          {msg.content}
+                        </ReactMarkdown>
+                      </div>
+                    ) : (
+                      <span className="message-content">{msg.content}</span>
+                    )}
+                  </div>
+                )
+              })}
+              {tab.status === 'processing' && (
+                <div className="message message-tool">
+                  <span className="tool-indicator">
+                    {tab.currentTool || 'Processing...'}
+                  </span>
+                </div>
+              )}
+            </div>
+          )
         ))}
 
         {/* Show welcome when no tabs are open and terminal sub-tab is selected */}
@@ -3185,24 +3447,124 @@ function App() {
         {/* Projects tab - always mounted, hidden when inactive */}
         <div className={`projects-container ${activeSubTab !== 'projects' ? 'tab-hidden' : ''}`}>
           <div className="projects-add-form">
-            <h3>Add Project</h3>
-            <div className="projects-add-row">
-              <input
-                type="text"
-                className="projects-path-input"
-                value={newProjectPath}
-                onChange={(e) => setNewProjectPath(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleAddProject() }}
-                placeholder="Enter project directory path..."
-              />
-              <button
-                className="projects-add-button"
-                onClick={handleAddProject}
-                disabled={!newProjectPath.trim()}
-              >
-                Add
-              </button>
+            <div className="projects-add-header">
+              <h3>Add Project</h3>
+              <div className="projects-mode-toggle">
+                <button
+                  className={`projects-mode-button ${addProjectMode === 'existing' ? 'active' : ''}`}
+                  onClick={() => setAddProjectMode('existing')}
+                >
+                  Existing Directory
+                </button>
+                <button
+                  className={`projects-mode-button ${addProjectMode === 'clone' ? 'active' : ''}`}
+                  onClick={() => setAddProjectMode('clone')}
+                >
+                  Clone from GitHub
+                </button>
+              </div>
             </div>
+
+            {addProjectMode === 'existing' ? (
+              <div className="projects-add-row">
+                <input
+                  type="text"
+                  className="projects-path-input"
+                  value={newProjectPath}
+                  onChange={(e) => setNewProjectPath(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') handleAddProject() }}
+                  placeholder="Enter project directory path..."
+                />
+                <button
+                  className="projects-add-button"
+                  onClick={handleAddProject}
+                  disabled={!newProjectPath.trim()}
+                >
+                  Add
+                </button>
+              </div>
+            ) : (
+              <div className="projects-clone-form">
+                <div className="projects-add-row">
+                  <input
+                    type="text"
+                    className="projects-path-input"
+                    value={cloneUrl}
+                    onChange={(e) => setCloneUrl(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && cloneUrl.trim() && cloneParentDir.trim()) handleCloneProject() }}
+                    placeholder="https://github.com/owner/repo"
+                    disabled={cloningProject}
+                  />
+                </div>
+                <div className="projects-add-row">
+                  <input
+                    type="text"
+                    className="projects-path-input"
+                    value={cloneParentDir}
+                    placeholder="Clone into directory..."
+                    disabled={cloningProject}
+                    readOnly
+                  />
+                  <button
+                    className="projects-browse-button"
+                    onClick={() => handleBrowseDirectory(cloneParentDir || undefined)}
+                    disabled={cloningProject}
+                  >
+                    Browse
+                  </button>
+                  <button
+                    className="projects-add-button"
+                    onClick={handleCloneProject}
+                    disabled={!cloneUrl.trim() || !cloneParentDir.trim() || cloningProject}
+                  >
+                    {cloningProject ? 'Cloning...' : 'Clone'}
+                  </button>
+                </div>
+
+                {showDirBrowser && (
+                  <div className="projects-dir-browser">
+                    <div className="projects-dir-browser-header">
+                      <span className="projects-dir-browser-path">{browseCurrentPath}</span>
+                      {browseParentPath && (
+                        <button
+                          className="projects-dir-up-button"
+                          onClick={() => handleBrowseDirectory(browseParentPath!)}
+                          disabled={loadingDirs}
+                        >
+                          Up
+                        </button>
+                      )}
+                      <button
+                        className="projects-dir-select-button"
+                        onClick={() => {
+                          setCloneParentDir(browseCurrentPath)
+                          setShowDirBrowser(false)
+                        }}
+                      >
+                        Select
+                      </button>
+                    </div>
+                    {loadingDirs ? (
+                      <div className="welcome-message">Loading...</div>
+                    ) : browseDirs.length === 0 ? (
+                      <div className="welcome-message">No subdirectories</div>
+                    ) : (
+                      <div className="projects-dir-list">
+                        {browseDirs.map(dir => (
+                          <button
+                            key={dir.path}
+                            className="projects-dir-item"
+                            onClick={() => handleBrowseDirectory(dir.path)}
+                          >
+                            {dir.name}/
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {loadingProjects && projects.length === 0 && (
@@ -3248,6 +3610,15 @@ function App() {
                             disabled={!project.available}
                           >
                             Open
+                          </button>
+                        )}
+                        {shellAuthorized && project.available && (
+                          <button
+                            className="project-shell-button"
+                            onClick={() => handleOpenShell(project)}
+                            title="Open shell terminal"
+                          >
+                            Shell
                           </button>
                         )}
                         <button
@@ -4442,7 +4813,7 @@ function App() {
                 ))}
               </div>
             )}
-            <div className="terminal-input-container">
+            <div className={`terminal-input-container ${activeTerminalTab?.type === 'shell' ? 'tab-hidden' : ''}`}>
               <input
                 ref={fileInputRef}
                 type="file"

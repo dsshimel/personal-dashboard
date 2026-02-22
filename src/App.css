@@ -485,6 +485,16 @@
   min-height: 0; /* Important for flex children to scroll */
 }
 
+.xterm-container {
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+}
+
+.xterm-container .xterm {
+  height: 100%;
+}
+
 .terminal-output::after {
   content: '';
   display: block;
@@ -1540,6 +1550,161 @@
   opacity: 0.5;
 }
 
+.projects-add-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.projects-add-header h3 {
+  margin: 0;
+  color: #e0e0e0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.projects-mode-toggle {
+  display: flex;
+  gap: 4px;
+  background-color: #0f172a;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.projects-mode-button {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #8892a4;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.projects-mode-button.active {
+  background-color: #2a3f5f;
+  color: #e0e0e0;
+}
+
+.projects-mode-button:hover:not(.active) {
+  color: #c0c8d4;
+}
+
+.projects-clone-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.projects-browse-button {
+  padding: 10px 16px;
+  background-color: #2a3f5f;
+  border: 1px solid #3a5580;
+  border-radius: 6px;
+  color: #e0e0e0;
+  font-weight: 500;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  flex-shrink: 0;
+}
+
+.projects-browse-button:hover:not(:disabled) {
+  background-color: #3a5580;
+}
+
+.projects-browse-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.projects-dir-browser {
+  border: 1px solid #2a3f5f;
+  border-radius: 6px;
+  background-color: #0f172a;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.projects-dir-browser-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2a3f5f;
+  background-color: #16213e;
+  position: sticky;
+  top: 0;
+}
+
+.projects-dir-browser-path {
+  flex: 1;
+  font-size: 12px;
+  color: #8892a4;
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projects-dir-up-button {
+  padding: 4px 10px;
+  background-color: #2a3f5f;
+  border: none;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.projects-dir-up-button:hover:not(:disabled) {
+  background-color: #3a5580;
+}
+
+.projects-dir-select-button {
+  padding: 4px 10px;
+  background-color: #4ade80;
+  border: none;
+  border-radius: 4px;
+  color: #1a1a2e;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.projects-dir-select-button:hover {
+  background-color: #22c55e;
+}
+
+.projects-dir-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.projects-dir-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: #a0aec0;
+  font-size: 13px;
+  font-family: monospace;
+  cursor: pointer;
+  transition: background-color 0.15s;
+}
+
+.projects-dir-item:hover {
+  background-color: #1a2744;
+  color: #e0e0e0;
+}
+
 .projects-list {
   display: flex;
   flex-direction: column;
@@ -1601,6 +1766,27 @@
 
 .project-switch-button:hover {
   background-color: #2563eb;
+}
+
+.project-switch-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.project-shell-button {
+  padding: 6px 14px;
+  background-color: #0f172a;
+  border: 1px solid #4ade80;
+  border-radius: 4px;
+  color: #4ade80;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.project-shell-button:hover {
+  background-color: rgba(74, 222, 128, 0.15);
 }
 
 .project-deactivate-button {

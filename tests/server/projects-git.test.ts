@@ -8,7 +8,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { tmpdir } from 'os';
-import { detectGitHubUrl } from '../../server/projects';
+import { detectGitHubUrl, isValidGitHubUrl, parseGitHubRepoName } from '../../server/projects';
 
 describe('detectGitHubUrl', () => {
   test('detects GitHub URL from current repo', async () => {
@@ -28,6 +28,54 @@ describe('detectGitHubUrl', () => {
   test('returns null for nonexistent directory', async () => {
     const url = await detectGitHubUrl('/nonexistent/directory/that/doesnt/exist');
     expect(url).toBeNull();
+  });
+});
+
+describe('isValidGitHubUrl', () => {
+  test('accepts standard GitHub URL', () => {
+    expect(isValidGitHubUrl('https://github.com/owner/repo')).toBe(true);
+  });
+
+  test('accepts URL with .git suffix', () => {
+    expect(isValidGitHubUrl('https://github.com/owner/repo.git')).toBe(true);
+  });
+
+  test('accepts URL with hyphens and dots', () => {
+    expect(isValidGitHubUrl('https://github.com/my-org/my.repo-name')).toBe(true);
+  });
+
+  test('rejects non-GitHub URL', () => {
+    expect(isValidGitHubUrl('https://gitlab.com/owner/repo')).toBe(false);
+  });
+
+  test('rejects URL without repo path', () => {
+    expect(isValidGitHubUrl('https://github.com/owner')).toBe(false);
+  });
+
+  test('rejects empty string', () => {
+    expect(isValidGitHubUrl('')).toBe(false);
+  });
+
+  test('rejects SSH URL', () => {
+    expect(isValidGitHubUrl('git@github.com:owner/repo.git')).toBe(false);
+  });
+
+  test('rejects URL with trailing slash', () => {
+    expect(isValidGitHubUrl('https://github.com/owner/repo/')).toBe(false);
+  });
+});
+
+describe('parseGitHubRepoName', () => {
+  test('extracts repo name from standard URL', () => {
+    expect(parseGitHubRepoName('https://github.com/owner/repo')).toBe('repo');
+  });
+
+  test('strips .git suffix', () => {
+    expect(parseGitHubRepoName('https://github.com/owner/repo.git')).toBe('repo');
+  });
+
+  test('handles hyphenated repo names', () => {
+    expect(parseGitHubRepoName('https://github.com/owner/my-cool-repo')).toBe('my-cool-repo');
   });
 });
 

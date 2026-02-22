@@ -37,6 +37,11 @@ export const FLAG_REGISTRY: FlagDefinition[] = [
     label: 'Social Auth',
     description: 'Require Google sign-in to access the dashboard',
   },
+  {
+    key: 'shell-terminal',
+    label: 'Shell Terminal',
+    description: 'Enable xterm.js shell terminal (requires AUTHORIZED_EMAIL)',
+  },
 ];
 
 /**

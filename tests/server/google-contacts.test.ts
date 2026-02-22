@@ -20,6 +20,8 @@ import {
   fetchGoogleContacts,
   getRandomGoogleContacts,
   handleGoogleCallback,
+  getAuthenticatedEmail,
+  isShellAuthorized,
 } from '../../server/google-contacts';
 import { initDb, closeDb, setConfigDir, getDb } from '../../server/db';
 
@@ -335,6 +337,48 @@ describe('Google Contacts Module', () => {
       const result = normalizePerson(person);
       expect(result!.resourceName).toBe('');
       expect(result!.name).toBe('Dave');
+    });
+  });
+
+  describe('getAuthenticatedEmail', () => {
+    test('returns null when no email is stored', () => {
+      expect(getAuthenticatedEmail()).toBeNull();
+    });
+
+    test('returns the stored email', () => {
+      const db = getDb();
+      db.prepare('INSERT OR REPLACE INTO google_auth (key, value) VALUES (?, ?)').run('user_email', 'test@example.com');
+      expect(getAuthenticatedEmail()).toBe('test@example.com');
+    });
+  });
+
+  describe('isShellAuthorized', () => {
+    test('returns false when AUTHORIZED_EMAIL is not set', () => {
+      withEnv({ AUTHORIZED_EMAIL: undefined }, () => {
+        expect(isShellAuthorized()).toBe(false);
+      });
+    });
+
+    test('returns false when no email is stored', () => {
+      withEnv({ AUTHORIZED_EMAIL: 'user@example.com' }, () => {
+        expect(isShellAuthorized()).toBe(false);
+      });
+    });
+
+    test('returns false when email does not match', () => {
+      const db = getDb();
+      db.prepare('INSERT OR REPLACE INTO google_auth (key, value) VALUES (?, ?)').run('user_email', 'other@example.com');
+      withEnv({ AUTHORIZED_EMAIL: 'user@example.com' }, () => {
+        expect(isShellAuthorized()).toBe(false);
+      });
+    });
+
+    test('returns true when email matches', () => {
+      const db = getDb();
+      db.prepare('INSERT OR REPLACE INTO google_auth (key, value) VALUES (?, ?)').run('user_email', 'user@example.com');
+      withEnv({ AUTHORIZED_EMAIL: 'user@example.com' }, () => {
+        expect(isShellAuthorized()).toBe(true);
+      });
     });
   });
 });

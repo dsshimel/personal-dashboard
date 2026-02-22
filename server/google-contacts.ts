@@ -84,6 +84,7 @@ export function getGoogleAuthUrl(redirectUri?: string): string | null {
     scope: [
       'https://www.googleapis.com/auth/contacts.readonly',
       'https://www.googleapis.com/auth/calendar.events.readonly',
+      'https://www.googleapis.com/auth/userinfo.email',
     ],
   });
 }
@@ -107,6 +108,19 @@ export async function handleGoogleCallback(code: string, redirectUri?: string): 
     refresh_token: tokens.refresh_token,
     expiry_date: typeof tokens.expiry_date === 'number' ? tokens.expiry_date : null,
   });
+
+  // Fetch and store the authenticated user's email
+  try {
+    client.setCredentials(tokens);
+    const oauth2 = google.oauth2({ version: 'v2', auth: client });
+    const userInfo = await oauth2.userinfo.get();
+    if (userInfo.data.email) {
+      const db = getDb();
+      db.prepare('INSERT OR REPLACE INTO google_auth (key, value) VALUES (?, ?)').run('user_email', userInfo.data.email);
+    }
+  } catch (err) {
+    console.error('Failed to fetch user email:', err);
+  }
 }
 
 /**
@@ -232,6 +246,21 @@ export function clearContactsCache(): void {
   cachedContacts = null;
   cacheExpiry = 0;
   inFlightFetch = null;
+}
+
+/** Returns the email address of the Google-authenticated user, or null. */
+export function getAuthenticatedEmail(): string | null {
+  const db = getDb();
+  const row = db.prepare("SELECT value FROM google_auth WHERE key = 'user_email'").get() as { value: string } | null;
+  return row ? row.value : null;
+}
+
+/** Checks if the current Google-authenticated user is authorized for shell access. */
+export function isShellAuthorized(): boolean {
+  const authorizedEmail = process.env.AUTHORIZED_EMAIL;
+  if (!authorizedEmail) return false;
+  const email = getAuthenticatedEmail();
+  return email === authorizedEmail;
 }
 
 // --- Internal helpers ---

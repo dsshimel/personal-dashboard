@@ -161,6 +161,16 @@ export async function loadProjects(): Promise<Project[]> {
   });
 }
 
+/** Validates that a URL is a GitHub repository URL (HTTPS format). */
+export function isValidGitHubUrl(url: string): boolean {
+  return /^https?:\/\/(www\.)?github\.com\/[\w.-]+\/[\w.-]+(\.git)?$/.test(url);
+}
+
+/** Extracts the repository name from a GitHub URL. */
+export function parseGitHubRepoName(url: string): string {
+  return url.replace(/\.git$/, '').split('/').pop()!;
+}
+
 /**
  * Detects the GitHub URL from a git repository's origin remote.
  *
