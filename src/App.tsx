@@ -13,6 +13,9 @@ import './App.css'
 import '@xterm/xterm/css/xterm.css'
 import { Terminal as XTerm } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
+import { WebglAddon } from '@xterm/addon-webgl'
+import { WebLinksAddon } from '@xterm/addon-web-links'
+import { Unicode11Addon } from '@xterm/addon-unicode11'
 import { initClientTelemetry, reportWsReconnect } from './telemetry'
 
 /**
@@ -191,8 +194,9 @@ interface StoredTerminalTab {
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 
 /** Currently active UI tab. */
-type Section = 'briefing' | 'crm' | 'diagnostics' | 'feature-flags' | 'hardware' | 'recitations' | 'research' | 'terminal' | 'todo'
+type Section = 'auth' | 'briefing' | 'crm' | 'diagnostics' | 'feature-flags' | 'hardware' | 'notifications' | 'recitations' | 'research' | 'terminal' | 'todo'
 type TerminalTab = 'terminal' | 'projects' | 'conversations'
+type AuthTab = 'auth-status'
 type HardwareTab = 'webcams'
 type DiagnosticsTab = 'logs' | 'client-perf' | 'server-perf'
 type CrmTab = 'contacts' | 'google-contacts'
@@ -201,15 +205,18 @@ type BriefingTab = 'briefing-editor' | 'briefing-calendar'
 type RecitationsTab = 'recitations-editor'
 type ResearchTab = 'topics'
 type FeatureFlagsTab = 'flags'
-type SubTab = TerminalTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab | RecitationsTab | ResearchTab | FeatureFlagsTab
+type NotificationsTab = 'notification-feed' | 'watched-docs'
+type SubTab = TerminalTab | AuthTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab | RecitationsTab | ResearchTab | FeatureFlagsTab | NotificationsTab
 
 // Keep alphabetized by section key
 const SECTION_TABS: Record<Section, SubTab[]> = {
+  auth: ['auth-status'],
   briefing: ['briefing-editor', 'briefing-calendar'],
   crm: ['contacts', 'google-contacts'],
   diagnostics: ['logs', 'client-perf', 'server-perf'],
   'feature-flags': ['flags'],
   hardware: ['webcams'],
+  notifications: ['notification-feed', 'watched-docs'],
   recitations: ['recitations-editor'],
   research: ['topics'],
   terminal: ['terminal', 'projects', 'conversations'],
@@ -218,11 +225,13 @@ const SECTION_TABS: Record<Section, SubTab[]> = {
 
 // Keep alphabetized by display label
 const SUB_TAB_LABELS: Record<SubTab, string> = {
+  'auth-status': 'Status',
   'client-perf': 'Client Performance',
   contacts: 'Contacts',
   'google-contacts': 'Google Contacts',
   conversations: 'Conversations',
   flags: 'Flags',
+  'notification-feed': 'Feed',
   'briefing-calendar': 'Calendar',
   'briefing-editor': 'Prompt Editor',
   projects: 'Projects',
@@ -230,6 +239,7 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
   'server-perf': 'Server Performance',
   topics: 'Topics',
   logs: 'Server Logs',
+  'watched-docs': 'Watched Docs',
   terminal: 'Terminal',
   todos: 'Todos',
   webcams: 'Webcams',
@@ -237,11 +247,13 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
 
 // Keep sidebar sections alphabetized by display label
 const SECTION_LABELS: Record<Section, string> = {
+  auth: '🔐 Auth',
   briefing: '☀️ Daily Briefing',
   diagnostics: '🩺 Diagnostics',
   'feature-flags': '🚩 Feature Flags',
   crm: '👥 Friend CRM',
   hardware: '🖥️ Hardware',
+  notifications: '🔔 Notifications',
   recitations: '📖 Recitations',
   research: '🔬 Research',
   terminal: '💻 Terminal',
@@ -253,6 +265,7 @@ const SECTION_LABELS: Record<Section, string> = {
  * Sub-tabs whose name matches the section's default don't need a slug (navigated via section URL).
  */
 const SUBTAB_TO_SLUG: Record<SubTab, string> = {
+  'auth-status': 'status',
   'briefing-editor': 'editor',
   'briefing-calendar': 'calendar',
   'client-perf': 'client-perf',
@@ -261,12 +274,14 @@ const SUBTAB_TO_SLUG: Record<SubTab, string> = {
   flags: 'flags',
   'google-contacts': 'google-contacts',
   logs: 'logs',
+  'notification-feed': 'feed',
   projects: 'projects',
   'recitations-editor': 'editor',
   'server-perf': 'server-perf',
   terminal: 'terminal',
   todos: 'todos',
   topics: 'topics',
+  'watched-docs': 'watched-docs',
   webcams: 'webcams',
 }
 
@@ -367,6 +382,29 @@ interface TodoItem {
   description: string
   createdAt: string
   done: boolean
+}
+
+/** A watched Google document. */
+interface WatchedDocument {
+  id: string
+  googleId: string
+  name: string
+  url: string
+  docType: 'doc' | 'sheet'
+  lastModified: string | null
+  addedAt: string
+}
+
+/** A document change notification. */
+interface DocNotification {
+  id: string
+  watchedDocumentId: string
+  documentName: string
+  docType: 'doc' | 'sheet'
+  url: string
+  modifiedAt: string
+  detectedAt: string
+  read: boolean
 }
 
 /** Represents a recitation item. */
@@ -470,10 +508,14 @@ function App() {
   const [pendingClonedProject, setPendingClonedProject] = useState<Project | null>(null)
 
   // Shell terminal state
-  const [shellAuthorized, setShellAuthorized] = useState(false)
-  const xtermContainerRef = useRef<HTMLDivElement>(null)
-  const xtermRef = useRef<XTerm | null>(null)
-  const fitAddonRef = useRef<FitAddon | null>(null)
+  const [shellAuthStatus, setShellAuthStatus] = useState<{
+    authorized: boolean, flagEnabled: boolean, googleAuthed: boolean,
+    emailMatch: boolean, hasAuthorizedEmail: boolean,
+    authorizedEmail: string | null, connectedEmail: string | null,
+  } | null>(null)
+  const shellAuthorized = shellAuthStatus?.authorized ?? false
+  const xtermInstancesRef = useRef<Map<string, { term: XTerm, fitAddon: FitAddon, webglAddon: WebglAddon | null, onData: { dispose(): void }, onResize: { dispose(): void }, resizeHandler: () => void, viewportHandler: () => void, touchHandler: (e: TouchEvent) => void, container: HTMLDivElement }>>(new Map())
+  const xtermContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map())
 
   // CRM state
   const [crmContacts, setCrmContacts] = useState<CrmContact[]>([])
@@ -503,6 +545,16 @@ function App() {
   // Google Calendar state
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([])
   const [loadingCalendarEvents, setLoadingCalendarEvents] = useState(false)
+
+  // Notifications state
+  const [docNotifications, setDocNotifications] = useState<DocNotification[]>([])
+  const [watchedDocs, setWatchedDocs] = useState<WatchedDocument[]>([])
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0)
+  const [loadingNotifications, setLoadingNotifications] = useState(false)
+  const [loadingWatchedDocs, setLoadingWatchedDocs] = useState(false)
+  const [watchUrlInput, setWatchUrlInput] = useState('')
+  const [addingWatch, setAddingWatch] = useState(false)
+  const [checkingNow, setCheckingNow] = useState(false)
 
   // Feature flags state
   const [featureFlags, setFeatureFlags] = useState<FeatureFlag[]>([])
@@ -599,9 +651,9 @@ function App() {
     [terminalTabs, activeTerminalTabId]
   )
 
-  /** Persists current terminal tabs to localStorage. */
+  /** Persists current terminal tabs to localStorage. Shell tabs are excluded since PTYs can't be resumed. */
   const persistTabs = useCallback((tabs: TerminalTabState[], activeId: string | null) => {
-    const stored: StoredTerminalTab[] = tabs.map(t => ({
+    const stored: StoredTerminalTab[] = tabs.filter(t => t.type !== 'shell').map(t => ({
       id: t.id,
       type: t.type,
       projectId: t.projectId,
@@ -610,8 +662,11 @@ function App() {
       sessionId: t.sessionId,
     }))
     localStorage.setItem('terminalTabs', JSON.stringify(stored))
-    if (activeId) {
-      localStorage.setItem('activeTerminalTabId', activeId)
+    // Fall back to a persisted tab if the active tab is a shell
+    const activeTab = tabs.find(t => t.id === activeId)
+    const effectiveActiveId = activeTab?.type === 'shell' ? (stored.length > 0 ? stored[stored.length - 1].id : null) : activeId
+    if (effectiveActiveId) {
+      localStorage.setItem('activeTerminalTabId', effectiveActiveId)
     } else {
       localStorage.removeItem('activeTerminalTabId')
     }
@@ -803,16 +858,21 @@ function App() {
             })
             addTabMessage(tabId, 'status', `Conversation: ${data.content}`)
             break
-          case 'pty-output':
-            // Write PTY output directly to xterm.js
-            if (xtermRef.current && activeTerminalTabIdRef.current === tabId) {
-              xtermRef.current.write(data.data)
+          case 'pty-output': {
+            // Write PTY output to the correct xterm instance (even if tab is in background)
+            const instance = xtermInstancesRef.current.get(tabId)
+            if (instance) {
+              instance.term.write(data.data)
             }
             break
-          case 'pty-exit':
-            addTabMessage(tabId, 'status', 'Shell exited')
-            updateTab(tabId, { status: 'connected' })
+          }
+          case 'pty-exit': {
+            const exitedInstance = xtermInstancesRef.current.get(tabId)
+            if (exitedInstance) {
+              exitedInstance.term.write('\r\n\x1b[90m[Shell exited]\x1b[0m\r\n')
+            }
             break
+          }
         }
       } catch {
         console.error('[WS] Failed to parse message:', event.data)
@@ -1180,6 +1240,101 @@ function App() {
       console.error('Failed to toggle feature flag:', error)
     }
   }, [fetchFeatureFlags])
+
+  // --- Notifications data fetching ---
+
+  const fetchNotifications = useCallback(async () => {
+    setLoadingNotifications(true)
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/notifications`)
+      if (res.ok) setDocNotifications(await res.json())
+    } catch (error) {
+      console.error('Failed to fetch notifications:', error)
+    } finally {
+      setLoadingNotifications(false)
+    }
+  }, [])
+
+  const fetchWatchedDocs = useCallback(async () => {
+    setLoadingWatchedDocs(true)
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/notifications/watches`)
+      if (res.ok) setWatchedDocs(await res.json())
+    } catch (error) {
+      console.error('Failed to fetch watched docs:', error)
+    } finally {
+      setLoadingWatchedDocs(false)
+    }
+  }, [])
+
+  const fetchUnreadCount = useCallback(async () => {
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/notifications/unread-count`)
+      if (res.ok) {
+        const data = await res.json()
+        setUnreadNotificationCount(data.count)
+      }
+    } catch {
+      // Silently ignore — badge is non-critical
+    }
+  }, [])
+
+  const handleAddWatch = useCallback(async () => {
+    if (!watchUrlInput.trim()) return
+    setAddingWatch(true)
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/notifications/watches`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: watchUrlInput.trim() }),
+      })
+      if (res.ok) {
+        setWatchUrlInput('')
+        fetchWatchedDocs()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Failed to add document')
+      }
+    } catch (error) {
+      console.error('Failed to add watched document:', error)
+    } finally {
+      setAddingWatch(false)
+    }
+  }, [watchUrlInput, fetchWatchedDocs])
+
+  const handleRemoveWatch = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`http://${window.location.hostname}:4001/notifications/watches/${id}`, { method: 'DELETE' })
+      if (res.ok) {
+        fetchWatchedDocs()
+        fetchUnreadCount()
+      }
+    } catch (error) {
+      console.error('Failed to remove watched document:', error)
+    }
+  }, [fetchWatchedDocs, fetchUnreadCount])
+
+  const handleMarkAllRead = useCallback(async () => {
+    try {
+      await fetch(`http://${window.location.hostname}:4001/notifications/mark-read`, { method: 'POST' })
+      setUnreadNotificationCount(0)
+      setDocNotifications(prev => prev.map(n => ({ ...n, read: true })))
+    } catch (error) {
+      console.error('Failed to mark notifications read:', error)
+    }
+  }, [])
+
+  const handleCheckNow = useCallback(async () => {
+    setCheckingNow(true)
+    try {
+      await fetch(`http://${window.location.hostname}:4001/notifications/check`, { method: 'POST' })
+      await Promise.all([fetchNotifications(), fetchUnreadCount()])
+    } catch (error) {
+      console.error('Failed to check for changes:', error)
+    } finally {
+      setCheckingNow(false)
+    }
+  }, [fetchNotifications, fetchUnreadCount])
 
   // --- Todo data fetching ---
 
@@ -1829,7 +1984,7 @@ function App() {
       const res = await fetch(`http://${window.location.hostname}:4001/shell/auth-status`)
       if (res.ok) {
         const data = await res.json()
-        setShellAuthorized(data.authorized)
+        setShellAuthStatus(data)
       }
     } catch (error) {
       console.error('Failed to fetch shell auth status:', error)
@@ -2043,7 +2198,21 @@ function App() {
 
   /** Closes a terminal tab and cleans up server resources. */
   const closeTerminalTab = useCallback((tabId: string) => {
-    // Send tab-close to server
+    // Clean up xterm instance if this is a shell tab
+    const instance = xtermInstancesRef.current.get(tabId)
+    if (instance) {
+      window.removeEventListener('resize', instance.resizeHandler)
+      window.visualViewport?.removeEventListener('resize', instance.viewportHandler)
+      instance.container.removeEventListener('touchstart', instance.touchHandler)
+      instance.onData.dispose()
+      instance.onResize.dispose()
+      instance.webglAddon?.dispose()
+      instance.term.dispose()
+      xtermInstancesRef.current.delete(tabId)
+      xtermContainerRefs.current.delete(tabId)
+    }
+
+    // Send tab-close to server (handles both Claude manager and PTY cleanup)
     wsRef.current?.send(JSON.stringify({ type: 'tab-close', tabId }))
 
     setTerminalTabs(prev => {
@@ -2105,6 +2274,37 @@ function App() {
     navigate('/')
   }, [terminalTabs, persistTabs, navigate])
 
+  /** Opens a standalone shell terminal tab (not tied to a project). */
+  const handleOpenStandaloneShell = useCallback(() => {
+    // Generate unique ID for each standalone shell
+    const existingShells = terminalTabs.filter(t => t.id.startsWith('shell-home'))
+    const shellNum = existingShells.length + 1
+    const tabId = `shell-home-${Date.now()}`
+
+    const newTab: TerminalTabState = {
+      id: tabId,
+      type: 'shell',
+      projectId: 'home',
+      projectName: shellNum === 1 ? 'Shell' : `Shell ${shellNum}`,
+      workingDirectory: '~',
+      messages: [],
+      sessionId: null,
+      lastMessageId: 0,
+      status: 'connected',
+      currentTool: null,
+      pendingImages: [],
+    }
+
+    setTerminalTabs(prev => {
+      const next = [...prev, newTab]
+      persistTabs(next, tabId)
+      return next
+    })
+    setActiveTerminalTabId(tabId)
+    setActiveSubTab('terminal')
+    navigate('/')
+  }, [terminalTabs, persistTabs, navigate])
+
   // Auto-open a newly cloned project
   useEffect(() => {
     if (pendingClonedProject) {
@@ -2113,27 +2313,41 @@ function App() {
     }
   }, [pendingClonedProject, handleActivateProject])
 
-  // xterm.js lifecycle: mount when a shell tab is active, unmount on cleanup
+  /** Sends a key sequence to the active shell tab's PTY. */
+  const sendPtyKey = useCallback((data: string) => {
+    const tabId = activeTerminalTabId
+    if (!tabId) return
+    const ws = wsRef.current
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'pty-input', tabId, data }))
+    }
+    // Re-focus the terminal after button tap
+    const instance = xtermInstancesRef.current.get(tabId)
+    if (instance) instance.term.focus()
+  }, [activeTerminalTabId])
+
+  // xterm.js lifecycle: create instance on first activation, re-fit on subsequent activations
   useEffect(() => {
     const tab = activeTerminalTab
-    if (!tab || tab.type !== 'shell') {
-      // Clean up xterm if switching away from a shell tab
-      if (xtermRef.current) {
-        xtermRef.current.dispose()
-        xtermRef.current = null
-        fitAddonRef.current = null
-      }
+    if (!tab || tab.type !== 'shell') return
+
+    // Already have an instance — just re-fit after the container becomes visible
+    const existing = xtermInstancesRef.current.get(tab.id)
+    if (existing) {
+      requestAnimationFrame(() => existing.fitAddon.fit())
       return
     }
 
     // Wait for the container DOM element to be available
-    const container = xtermContainerRef.current
+    const container = xtermContainerRefs.current.get(tab.id)
     if (!container) return
 
     const term = new XTerm({
       cursorBlink: true,
       fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Menlo, Monaco, monospace',
       fontSize: 14,
+      allowProposedApi: true,
+      scrollback: 10000,
       theme: {
         background: '#0f1629',
         foreground: '#e0e0e0',
@@ -2160,11 +2374,33 @@ function App() {
 
     const fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
-    term.open(container)
-    fitAddon.fit()
 
-    xtermRef.current = term
-    fitAddonRef.current = fitAddon
+    // Load Unicode11 addon before open
+    const unicode11Addon = new Unicode11Addon()
+    term.loadAddon(unicode11Addon)
+    term.unicode.activeVersion = '11'
+
+    // Load WebLinksAddon before open
+    term.loadAddon(new WebLinksAddon())
+
+    term.open(container)
+
+    // Load WebGL addon AFTER open (needs DOM context), with graceful fallback
+    let webglAddon: WebglAddon | null = null
+    try {
+      webglAddon = new WebglAddon()
+      webglAddon.onContextLoss(() => {
+        console.warn('[xterm] WebGL context lost, falling back to DOM renderer')
+        webglAddon?.dispose()
+        webglAddon = null
+      })
+      term.loadAddon(webglAddon)
+    } catch (e) {
+      console.warn('[xterm] WebGL addon failed to load, using DOM renderer:', e)
+      webglAddon = null
+    }
+
+    fitAddon.fit()
 
     // Send pty-start to server
     const ws = wsRef.current
@@ -2179,15 +2415,36 @@ function App() {
     }
 
     // Forward keystrokes to server
-    const onDataDisposable = term.onData((data) => {
+    const onData = term.onData((data) => {
       const ws = wsRef.current
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'pty-input', tabId: tab.id, data }))
       }
     })
 
+    // Clipboard handling: Ctrl+Shift+C to copy, Ctrl+Shift+V to paste
+    term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+      if (event.ctrlKey && event.shiftKey && event.key === 'C' && event.type === 'keydown') {
+        const selection = term.getSelection()
+        if (selection) navigator.clipboard.writeText(selection)
+        return false
+      }
+      if (event.ctrlKey && event.shiftKey && event.key === 'V' && event.type === 'keydown') {
+        navigator.clipboard.readText().then(text => {
+          if (text) {
+            const ws = wsRef.current
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'pty-input', tabId: tab.id, data: text }))
+            }
+          }
+        }).catch(() => {})
+        return false
+      }
+      return true
+    })
+
     // Handle resize
-    const onResizeDisposable = term.onResize(({ cols, rows }) => {
+    const onResize = term.onResize(({ cols, rows }) => {
       const ws = wsRef.current
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'pty-resize', tabId: tab.id, cols, rows }))
@@ -2195,26 +2452,27 @@ function App() {
     })
 
     // Fit on window resize
-    const handleWindowResize = () => fitAddon.fit()
-    window.addEventListener('resize', handleWindowResize)
+    const resizeHandler = () => fitAddon.fit()
+    window.addEventListener('resize', resizeHandler)
 
-    return () => {
-      window.removeEventListener('resize', handleWindowResize)
-      onDataDisposable.dispose()
-      onResizeDisposable.dispose()
-      // Send pty-stop when leaving the tab
-      const ws = wsRef.current
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'pty-stop', tabId: tab.id }))
-      }
-      term.dispose()
-      xtermRef.current = null
-      fitAddonRef.current = null
+    // Touch-to-focus: tapping the terminal on mobile opens the virtual keyboard
+    const touchHandler = () => term.focus()
+    container.addEventListener('touchstart', touchHandler, { passive: true })
+
+    // Visual viewport resize: refit xterm when mobile keyboard opens/closes
+    const viewportHandler = () => {
+      requestAnimationFrame(() => fitAddon.fit())
     }
+    window.visualViewport?.addEventListener('resize', viewportHandler)
+
+    xtermInstancesRef.current.set(tab.id, { term, fitAddon, webglAddon, onData, onResize, resizeHandler, viewportHandler, touchHandler, container })
+
+    // No cleanup on tab switch — instances persist until the tab is closed
   }, [activeTerminalTab?.id, activeTerminalTab?.type])
 
   useEffect(() => {
     initClientTelemetry()
+    fetchShellAuthStatus()
   }, [])
 
   useEffect(() => {
@@ -2304,12 +2562,41 @@ function App() {
     }
   }, [activeSubTab, fetchBriefingPrompt, fetchLatestBriefing])
 
+  // Fetch auth status when auth tab is active
+  useEffect(() => {
+    if (activeSubTab === 'auth-status') {
+      fetchShellAuthStatus()
+      fetchGoogleAuthStatus()
+    }
+  }, [activeSubTab, fetchShellAuthStatus, fetchGoogleAuthStatus])
+
   // Fetch feature flags when flags tab is active
   useEffect(() => {
     if (activeSubTab === 'flags') {
       fetchFeatureFlags()
     }
   }, [activeSubTab, fetchFeatureFlags])
+
+  // Fetch unread notification count on mount and periodically
+  useEffect(() => {
+    fetchUnreadCount()
+    const interval = setInterval(fetchUnreadCount, 5 * 60 * 1000)
+    return () => clearInterval(interval)
+  }, [fetchUnreadCount])
+
+  // Fetch notifications when feed tab is active, then mark as read
+  useEffect(() => {
+    if (activeSubTab === 'notification-feed') {
+      fetchNotifications().then(() => handleMarkAllRead())
+    }
+  }, [activeSubTab, fetchNotifications, handleMarkAllRead])
+
+  // Fetch watched docs when watched-docs tab is active
+  useEffect(() => {
+    if (activeSubTab === 'watched-docs') {
+      fetchWatchedDocs()
+    }
+  }, [activeSubTab, fetchWatchedDocs])
 
   // Fetch todos when todo tab is active
   useEffect(() => {
@@ -3077,6 +3364,9 @@ function App() {
               onClick={() => handleSectionChange(section)}
             >
               {SECTION_LABELS[section]}
+              {section === 'notifications' && unreadNotificationCount > 0 && (
+                <span className="section-nav-badge">{unreadNotificationCount}</span>
+              )}
             </button>
           ))}
         </nav>
@@ -3217,6 +3507,15 @@ function App() {
                 Conversations
                 {sessions.length > 0 && <span className="tab-badge">{sessions.length}</span>}
               </button>
+              {shellAuthorized && (
+                <button
+                  className="tab tab-shell"
+                  onClick={handleOpenStandaloneShell}
+                  title="Open shell terminal"
+                >
+                  Shell
+                </button>
+              )}
             </>
           ) : (
             SECTION_TABS[activeSection].map(tab => (
@@ -3238,9 +3537,28 @@ function App() {
           tab.type === 'shell' ? (
             <div
               key={tab.id}
-              className={`xterm-container ${(activeTerminalTabId !== tab.id || activeSubTab !== 'terminal') ? 'tab-hidden' : ''}`}
-              ref={activeTerminalTabId === tab.id ? xtermContainerRef : undefined}
-            />
+              className={`xterm-shell-wrapper ${(activeTerminalTabId !== tab.id || activeSubTab !== 'terminal') ? 'tab-hidden' : ''}`}
+            >
+              <div
+                className="xterm-container"
+                ref={(el) => {
+                  if (el) xtermContainerRefs.current.set(tab.id, el)
+                  else xtermContainerRefs.current.delete(tab.id)
+                }}
+              />
+              <div className="shell-toolbar">
+                <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\t') }}>Tab</button>
+                <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\x1b') }}>Esc</button>
+                <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\x03') }}>Ctrl+C</button>
+                <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\x04') }}>Ctrl+D</button>
+                <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\x0c') }}>Ctrl+L</button>
+                <span className="shell-toolbar-divider" />
+                <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\x1b[A') }}>↑</button>
+                <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\x1b[B') }}>↓</button>
+                <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\x1b[D') }}>←</button>
+                <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\x1b[C') }}>→</button>
+              </div>
+            </div>
           ) : (
             <div
               key={tab.id}
@@ -3927,6 +4245,89 @@ function App() {
           )}
         </div>
 
+        {/* Auth Status - always mounted, hidden when inactive */}
+        <div className={`auth-container ${activeSubTab !== 'auth-status' ? 'tab-hidden' : ''}`}>
+          {!shellAuthStatus ? (
+            <div className="welcome-message">Loading auth status...</div>
+          ) : (
+            <div className="auth-content">
+              <div className="auth-section">
+                <h3 className="auth-section-title">Google Account</h3>
+                {shellAuthStatus.googleAuthed ? (
+                  <div className="auth-card auth-card-ok">
+                    <div className="auth-card-header">
+                      <span className="auth-dot auth-dot-on" />
+                      <span className="auth-card-label">Connected</span>
+                    </div>
+                    {shellAuthStatus.connectedEmail && (
+                      <div className="auth-card-detail">
+                        <span className="auth-detail-label">Email</span>
+                        <span className="auth-detail-value">{shellAuthStatus.connectedEmail}</span>
+                      </div>
+                    )}
+                    <button
+                      className="auth-action-button auth-disconnect-button"
+                      onClick={async () => { await handleGoogleDisconnect(); fetchShellAuthStatus() }}
+                    >
+                      Disconnect
+                    </button>
+                  </div>
+                ) : (
+                  <div className="auth-card auth-card-inactive">
+                    <div className="auth-card-header">
+                      <span className="auth-dot auth-dot-off" />
+                      <span className="auth-card-label">Not connected</span>
+                    </div>
+                    <p className="auth-card-hint">Connect your Google account to enable shell access, calendar, and contacts.</p>
+                    <button className="auth-action-button auth-connect-button" onClick={handleGoogleConnect}>
+                      Connect Google Account
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="auth-section">
+                <h3 className="auth-section-title">Shell Authorization</h3>
+                <div className={`auth-card ${shellAuthStatus.authorized ? 'auth-card-ok' : 'auth-card-inactive'}`}>
+                  <div className="auth-card-header">
+                    <span className={`auth-dot ${shellAuthStatus.authorized ? 'auth-dot-on' : 'auth-dot-off'}`} />
+                    <span className="auth-card-label">{shellAuthStatus.authorized ? 'Authorized' : 'Not Authorized'}</span>
+                  </div>
+                  <div className="auth-checklist">
+                    <div className="auth-check-item">
+                      <span className={`auth-check ${shellAuthStatus.googleAuthed ? 'auth-check-pass' : 'auth-check-fail'}`}>
+                        {shellAuthStatus.googleAuthed ? '✓' : '✗'}
+                      </span>
+                      <span>Google account connected</span>
+                    </div>
+                    <div className="auth-check-item">
+                      <span className={`auth-check ${shellAuthStatus.hasAuthorizedEmail ? 'auth-check-pass' : 'auth-check-fail'}`}>
+                        {shellAuthStatus.hasAuthorizedEmail ? '✓' : '✗'}
+                      </span>
+                      <span>AUTHORIZED_EMAIL configured</span>
+                      {shellAuthStatus.authorizedEmail && (
+                        <span className="auth-detail-value auth-detail-inline">{shellAuthStatus.authorizedEmail}</span>
+                      )}
+                    </div>
+                    <div className="auth-check-item">
+                      <span className={`auth-check ${shellAuthStatus.emailMatch ? 'auth-check-pass' : 'auth-check-fail'}`}>
+                        {shellAuthStatus.emailMatch ? '✓' : '✗'}
+                      </span>
+                      <span>Email matches</span>
+                    </div>
+                    <div className="auth-check-item">
+                      <span className={`auth-check ${shellAuthStatus.flagEnabled ? 'auth-check-pass' : 'auth-check-fail'}`}>
+                        {shellAuthStatus.flagEnabled ? '✓' : '✗'}
+                      </span>
+                      <span>Shell terminal feature flag enabled</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Feature Flags - always mounted, hidden when inactive */}
         <div className={`feature-flags-container ${activeSubTab !== 'flags' ? 'tab-hidden' : ''}`}>
           {loadingFlags && featureFlags.length === 0 && (
@@ -3955,6 +4356,103 @@ function App() {
                     <span className="feature-flag-label">{flag.label}</span>
                     <span className="feature-flag-description">{flag.description}</span>
                   </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Notifications Feed - always mounted, hidden when inactive */}
+        <div className={`notifications-container ${activeSubTab !== 'notification-feed' ? 'tab-hidden' : ''}`}>
+          <div className="notifications-header">
+            <h3>Notifications</h3>
+            <button
+              className="notifications-check-button"
+              onClick={handleCheckNow}
+              disabled={checkingNow}
+            >
+              {checkingNow ? 'Checking...' : 'Check Now'}
+            </button>
+          </div>
+          {loadingNotifications && docNotifications.length === 0 ? (
+            <div className="welcome-message">Loading notifications...</div>
+          ) : docNotifications.length === 0 ? (
+            <div className="welcome-message">No notifications yet. Add documents to watch in the Watched Docs tab.</div>
+          ) : (
+            <div className="notification-list">
+              {docNotifications.map(notif => (
+                <a
+                  key={notif.id}
+                  className={`notification-card ${notif.read ? '' : 'unread'}`}
+                  href={notif.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <div className="notification-card-header">
+                    <span className="notification-doc-icon">{notif.docType === 'sheet' ? '📊' : '📄'}</span>
+                    <span className="notification-doc-name">{notif.documentName}</span>
+                  </div>
+                  <div className="notification-card-meta">
+                    Modified {new Date(notif.modifiedAt).toLocaleString()}
+                  </div>
+                  <div className="notification-card-detected">
+                    Detected {new Date(notif.detectedAt).toLocaleString()}
+                  </div>
+                </a>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Watched Docs - always mounted, hidden when inactive */}
+        <div className={`notifications-container ${activeSubTab !== 'watched-docs' ? 'tab-hidden' : ''}`}>
+          <div className="notifications-header">
+            <h3>Watched Documents</h3>
+          </div>
+          <div className="watch-add-form">
+            <input
+              className="watch-url-input"
+              type="text"
+              placeholder="Paste Google Docs or Sheets URL..."
+              value={watchUrlInput}
+              onChange={e => setWatchUrlInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handleAddWatch()}
+              disabled={addingWatch}
+            />
+            <button
+              className="watch-add-button"
+              onClick={handleAddWatch}
+              disabled={addingWatch || !watchUrlInput.trim()}
+            >
+              {addingWatch ? 'Adding...' : 'Watch'}
+            </button>
+          </div>
+          {loadingWatchedDocs && watchedDocs.length === 0 ? (
+            <div className="welcome-message">Loading watched documents...</div>
+          ) : watchedDocs.length === 0 ? (
+            <div className="welcome-message">No documents being watched. Paste a Google Docs or Sheets URL above to start monitoring.</div>
+          ) : (
+            <div className="watched-docs-list">
+              {watchedDocs.map(doc => (
+                <div key={doc.id} className="watched-doc-item">
+                  <div className="watched-doc-info">
+                    <span className="notification-doc-icon">{doc.docType === 'sheet' ? '📊' : '📄'}</span>
+                    <div className="watched-doc-details">
+                      <a href={doc.url} target="_blank" rel="noopener noreferrer" className="watched-doc-name">
+                        {doc.name}
+                      </a>
+                      <span className="watched-doc-meta">
+                        {doc.lastModified ? `Last modified ${new Date(doc.lastModified).toLocaleString()}` : 'Not yet checked'}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    className="watched-doc-remove"
+                    onClick={() => handleRemoveWatch(doc.id)}
+                    title="Stop watching"
+                  >
+                    &times;
+                  </button>
                 </div>
               ))}
             </div>

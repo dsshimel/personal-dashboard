@@ -85,6 +85,7 @@ export function getGoogleAuthUrl(redirectUri?: string): string | null {
       'https://www.googleapis.com/auth/contacts.readonly',
       'https://www.googleapis.com/auth/calendar.events.readonly',
       'https://www.googleapis.com/auth/userinfo.email',
+      'https://www.googleapis.com/auth/drive.metadata.readonly',
     ],
   });
 }

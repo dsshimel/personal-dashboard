@@ -17,10 +17,11 @@ import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBrief
 import { initRecitationsDb, listRecitations, createRecitation, updateRecitation, deleteRecitation } from './recitations.js';
 import { initResearchDb, listTopics, createTopic, updateTopic, deleteTopic, listArticles, deleteArticle, generateResearchArticles } from './research.js';
 import { initFeatureFlagsDb, listFeatureFlags, toggleFeatureFlag, isFlagEnabled } from './feature-flags.js';
-import { initGoogleAuthDb, getGoogleAuthStatus, getGoogleAuthUrl, handleGoogleCallback, clearTokens as clearGoogleTokens, fetchGoogleContacts, getRandomGoogleContacts, isShellAuthorized } from './google-contacts.js';
+import { initGoogleAuthDb, getGoogleAuthStatus, getGoogleAuthUrl, handleGoogleCallback, clearTokens as clearGoogleTokens, fetchGoogleContacts, getRandomGoogleContacts, isShellAuthorized, getAuthenticatedEmail } from './google-contacts.js';
 import { PtyManager } from './pty-manager.js';
 import { fetchUpcomingEvents, clearCalendarCache } from './google-calendar.js';
 import { getWeatherLocation, setWeatherLocation, geocodeLocation, fetchConfiguredWeather } from './weather.js';
+import { initNotificationsDb, listWatchedDocuments, addWatchedDocument, removeWatchedDocument, listNotifications, getUnreadCount, markAllRead, checkForChanges, startNotificationScheduler } from './google-drive-notifications.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
 import { metricsMiddleware, metricsHandler, clientMetricsHandler, wsConnectionsActive, wsMessagesTotal, claudeCommandDuration, claudeCommandsTotal, claudeSessionsActive } from './telemetry.js';
@@ -41,8 +42,10 @@ initRecitationsDb(db);
 initResearchDb(db);
 initFeatureFlagsDb(db);
 initGoogleAuthDb(db);
+initNotificationsDb(db);
 
 startDailyEmailScheduler();
+startNotificationScheduler();
 
 const PORT = process.env.PORT || 4001;
 const WORKING_DIR = process.env.WORKING_DIR || process.cwd();
@@ -68,6 +71,9 @@ const sessionManagers = new Map<string, ClaudeCodeManager>();
 
 /** Maps tabId to their PtyManager instances for shell terminals. */
 const ptyManagers = new Map<string, PtyManager>();
+
+/** Maps tabId to the WebSocket connection that owns the PTY (only the owner can send input). */
+const ptyOwners = new Map<string, WebSocket>();
 
 /** All connected clients for broadcasting server logs. */
 const allClients = new Set<WebSocket>();
@@ -571,7 +577,7 @@ app.delete('/crm/interactions/:id', (req, res) => {
 
 // --- Google Contacts Endpoints ---
 
-const OAUTH_REDIRECT_URI = 'http://localhost:4001/auth/google/callback';
+const OAUTH_REDIRECT_URI = process.env.OAUTH_REDIRECT_URI || 'http://localhost:4001/auth/google/callback';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:6969';
 
 // Check if Google API is configured and authenticated
@@ -608,7 +614,13 @@ app.get('/auth/google/callback', async (req, res) => {
 // Disconnect Google account
 app.post('/google/auth/disconnect', (_req, res) => {
   clearGoogleTokens();
-  console.log('Google account disconnected');
+  // Kill all active PTY sessions since auth is revoked
+  for (const [tabId, pty] of ptyManagers) {
+    pty.kill();
+    ptyManagers.delete(tabId);
+    ptyOwners.delete(tabId);
+  }
+  console.log('Google account disconnected, all PTY sessions terminated');
   res.json({ status: 'ok' });
 });
 
@@ -622,6 +634,8 @@ app.get('/shell/auth-status', (_req, res) => {
     googleAuthed: getGoogleAuthStatus().authenticated,
     emailMatch: authorized,
     hasAuthorizedEmail: !!process.env.AUTHORIZED_EMAIL,
+    authorizedEmail: process.env.AUTHORIZED_EMAIL || null,
+    connectedEmail: getAuthenticatedEmail(),
   });
 });
 
@@ -729,6 +743,82 @@ app.delete('/todos/:id', (req, res) => {
   } catch (error) {
     console.error('Error deleting todo:', error);
     res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to delete todo' });
+  }
+});
+
+// --- Notification Endpoints ---
+
+app.get('/notifications', (_req, res) => {
+  try {
+    res.json(listNotifications());
+  } catch (error) {
+    console.error('Error listing notifications:', error);
+    res.status(500).json({ error: 'Failed to list notifications' });
+  }
+});
+
+app.get('/notifications/unread-count', (_req, res) => {
+  try {
+    res.json({ count: getUnreadCount() });
+  } catch (error) {
+    console.error('Error getting unread count:', error);
+    res.status(500).json({ error: 'Failed to get unread count' });
+  }
+});
+
+app.post('/notifications/mark-read', (_req, res) => {
+  try {
+    markAllRead();
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error marking notifications read:', error);
+    res.status(500).json({ error: 'Failed to mark notifications read' });
+  }
+});
+
+app.post('/notifications/check', async (_req, res) => {
+  try {
+    const changesFound = await checkForChanges();
+    res.json({ status: 'ok', changesFound });
+  } catch (error) {
+    console.error('Error checking for changes:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to check for changes' });
+  }
+});
+
+app.get('/notifications/watches', (_req, res) => {
+  try {
+    res.json(listWatchedDocuments());
+  } catch (error) {
+    console.error('Error listing watched documents:', error);
+    res.status(500).json({ error: 'Failed to list watched documents' });
+  }
+});
+
+app.post('/notifications/watches', async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url || typeof url !== 'string') {
+      return res.status(400).json({ error: 'URL is required' });
+    }
+    const doc = await addWatchedDocument(url.trim());
+    console.log(`Watching document: ${doc.name} (${doc.docType})`);
+    res.status(201).json(doc);
+  } catch (error) {
+    console.error('Error adding watched document:', error);
+    const status = error instanceof Error && error.message.includes('already being watched') ? 409 : 400;
+    res.status(status).json({ error: error instanceof Error ? error.message : 'Failed to add watched document' });
+  }
+});
+
+app.delete('/notifications/watches/:id', (req, res) => {
+  try {
+    removeWatchedDocument(req.params.id);
+    console.log(`Stopped watching document: ${req.params.id}`);
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error removing watched document:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to remove watched document' });
   }
 });
 
@@ -1459,6 +1549,7 @@ wss.on('connection', (ws) => {
           if (pty) {
             pty.kill();
             ptyManagers.delete(tabId);
+            ptyOwners.delete(tabId);
           }
           connectionTabs.get(ws)?.delete(tabId);
           console.log(`[Server] Tab closed: ${tabId}`);
@@ -1474,11 +1565,14 @@ wss.on('connection', (ws) => {
             ws.send(JSON.stringify({ type: 'error', content: 'PTY already running for this tab', tabId }));
             break;
           }
-          const cols = typeof message.cols === 'number' ? message.cols : 80;
-          const rows = typeof message.rows === 'number' ? message.rows : 24;
-          const cwd = (message.cwd && typeof message.cwd === 'string') ? message.cwd : WORKING_DIR;
+          const cols = typeof message.cols === 'number' ? Math.min(Math.max(message.cols, 1), 500) : 80;
+          const rows = typeof message.rows === 'number' ? Math.min(Math.max(message.rows, 1), 500) : 24;
+          const rawCwd = (message.cwd && typeof message.cwd === 'string') ? message.cwd : WORKING_DIR;
+          // Expand ~ and ~/... to home directory (does not handle ~user/... form)
+          const cwd = rawCwd === '~' ? homedir() : rawCwd.startsWith('~/') ? resolve(homedir(), rawCwd.slice(2)) : rawCwd;
           const pty = new PtyManager(cwd, cols, rows);
           ptyManagers.set(tabId, pty);
+          ptyOwners.set(tabId, ws);
 
           pty.on('data', (data: string) => {
             if (ws.readyState === WebSocket.OPEN) {
@@ -1487,6 +1581,7 @@ wss.on('connection', (ws) => {
           });
           pty.on('exit', () => {
             ptyManagers.delete(tabId);
+            ptyOwners.delete(tabId);
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'pty-exit', tabId }));
             }
@@ -1498,6 +1593,7 @@ wss.on('connection', (ws) => {
         }
 
         case 'pty-input': {
+          if (ptyOwners.get(tabId) !== ws) break;
           const pty = ptyManagers.get(tabId);
           if (pty && typeof message.data === 'string') {
             pty.write(message.data);
@@ -1506,18 +1602,21 @@ wss.on('connection', (ws) => {
         }
 
         case 'pty-resize': {
+          if (ptyOwners.get(tabId) !== ws) break;
           const pty = ptyManagers.get(tabId);
           if (pty && typeof message.cols === 'number' && typeof message.rows === 'number') {
-            pty.resize(message.cols, message.rows);
+            pty.resize(Math.min(Math.max(message.cols, 1), 500), Math.min(Math.max(message.rows, 1), 500));
           }
           break;
         }
 
         case 'pty-stop': {
+          if (ptyOwners.get(tabId) !== ws) break;
           const pty = ptyManagers.get(tabId);
           if (pty) {
             pty.kill();
             ptyManagers.delete(tabId);
+            ptyOwners.delete(tabId);
             console.log(`[Server] PTY stopped for tab ${tabId}`);
           }
           break;
@@ -1551,6 +1650,7 @@ wss.on('connection', (ws) => {
         if (pty) {
           pty.kill();
           ptyManagers.delete(tabId);
+          ptyOwners.delete(tabId);
         }
       }
     }

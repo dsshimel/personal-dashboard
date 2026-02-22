@@ -30,12 +30,21 @@ export class PtyManager extends EventEmitter {
 
     const shellCmd = shell || process.env.SHELL || '/bin/bash';
 
+    // Only pass through safe environment variables — exclude secrets and server config
+    const SAFE_ENV_KEYS = [
+      'HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE',
+      'EDITOR', 'VISUAL', 'PAGER', 'LESS', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
+      'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR', 'SSH_AUTH_SOCK', 'GPG_AGENT_INFO',
+      'COLORTERM', 'DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS',
+    ];
+    const safeEnv: Record<string, string> = { TERM: 'xterm-256color' };
+    for (const key of SAFE_ENV_KEYS) {
+      if (process.env[key]) safeEnv[key] = process.env[key]!;
+    }
+
     this.proc = Bun.spawn([shellCmd], {
       cwd: this.cwd,
-      env: {
-        ...process.env,
-        TERM: 'xterm-256color',
-      },
+      env: safeEnv,
       terminal: {
         cols: this.cols,
         rows: this.rows,

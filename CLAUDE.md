@@ -45,6 +45,7 @@ Browser
 | `server/telemetry.ts` | Prometheus metrics definitions, Express middleware, `/metrics` endpoints |
 | `src/telemetry.ts` | Client-side Web Vitals collection, pushes metrics to server |
 | `server/google-calendar.ts` | Google Calendar integration - fetches and caches upcoming events |
+| `server/google-drive-notifications.ts` | Google Drive change monitoring - watches Docs/Sheets for modifications |
 | `server/restart-watcher.ts` | Process watcher for graceful server restarts |
 
 ## WebSocket Protocol
@@ -135,3 +136,10 @@ To modify dashboards, edit the JSON in `grafana/dashboards/` and restart Grafana
 | `/projects/:id/conversations` | POST | Add conversation to project (body: `{conversationId}`) |
 | `/google/calendar/events` | GET | List upcoming Google Calendar events (4 weeks) |
 | `/projects/:id/conversations/:convId` | DELETE | Remove conversation from project |
+| `/notifications` | GET | List document change notifications |
+| `/notifications/unread-count` | GET | Get unread notification count |
+| `/notifications/mark-read` | POST | Mark all notifications as read |
+| `/notifications/check` | POST | Manually trigger change check |
+| `/notifications/watches` | GET | List watched documents |
+| `/notifications/watches` | POST | Add document to watch (body: `{url}`) |
+| `/notifications/watches/:id` | DELETE | Stop watching a document |

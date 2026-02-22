@@ -25,5 +25,6 @@ export default defineConfig({
   preview: {
     host: "0.0.0.0",
     port: 6969,
+    allowedHosts: ["davidjr.tail67330d.ts.net"],
   },
 });
