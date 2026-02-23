@@ -456,6 +456,7 @@ function App() {
   const [activeTerminalTabId, setActiveTerminalTabId] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [wsConnected, setWsConnected] = useState(false)
+  const [shellFullscreen, setShellFullscreen] = useState(false)
 
   // Server logs state
   const [logMessages, setLogMessages] = useState<LogMessage[]>([])
@@ -514,7 +515,7 @@ function App() {
     authorizedEmail: string | null, connectedEmail: string | null,
   } | null>(null)
   const shellAuthorized = shellAuthStatus?.authorized ?? false
-  const xtermInstancesRef = useRef<Map<string, { term: XTerm, fitAddon: FitAddon, webglAddon: WebglAddon | null, onData: { dispose(): void }, onResize: { dispose(): void }, resizeHandler: () => void, viewportHandler: () => void, touchHandler: (e: TouchEvent) => void, container: HTMLDivElement }>>(new Map())
+  const xtermInstancesRef = useRef<Map<string, { term: XTerm, fitAddon: FitAddon, webglAddon: WebglAddon | null, onData: { dispose(): void }, onResize: { dispose(): void }, resizeHandler: () => void, viewportHandler: () => void, touchStartHandler: (e: TouchEvent) => void, touchMoveHandler: (e: TouchEvent) => void, touchEndHandler: (e: TouchEvent) => void, container: HTMLDivElement }>>(new Map())
   const xtermContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map())
 
   // CRM state
@@ -2198,12 +2199,15 @@ function App() {
 
   /** Closes a terminal tab and cleans up server resources. */
   const closeTerminalTab = useCallback((tabId: string) => {
+    setShellFullscreen(false)
     // Clean up xterm instance if this is a shell tab
     const instance = xtermInstancesRef.current.get(tabId)
     if (instance) {
       window.removeEventListener('resize', instance.resizeHandler)
       window.visualViewport?.removeEventListener('resize', instance.viewportHandler)
-      instance.container.removeEventListener('touchstart', instance.touchHandler)
+      instance.container.removeEventListener('touchstart', instance.touchStartHandler)
+      instance.container.removeEventListener('touchmove', instance.touchMoveHandler)
+      instance.container.removeEventListener('touchend', instance.touchEndHandler)
       instance.onData.dispose()
       instance.onResize.dispose()
       instance.webglAddon?.dispose()
@@ -2325,6 +2329,43 @@ function App() {
     const instance = xtermInstancesRef.current.get(tabId)
     if (instance) instance.term.focus()
   }, [activeTerminalTabId])
+
+  const toggleShellFullscreen = useCallback(() => {
+    setShellFullscreen(prev => {
+      const next = !prev
+      // Re-fit xterm after the layout change
+      if (activeTerminalTabId) {
+        requestAnimationFrame(() => {
+          const instance = xtermInstancesRef.current.get(activeTerminalTabId)
+          if (instance) {
+            instance.fitAddon.fit()
+            instance.term.focus()
+          }
+        })
+      }
+      return next
+    })
+  }, [activeTerminalTabId])
+
+  // Escape key exits shell fullscreen
+  useEffect(() => {
+    if (!shellFullscreen) return
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        setShellFullscreen(false)
+        if (activeTerminalTabId) {
+          requestAnimationFrame(() => {
+            const instance = xtermInstancesRef.current.get(activeTerminalTabId)
+            if (instance) instance.fitAddon.fit()
+          })
+        }
+      }
+    }
+    window.addEventListener('keydown', handler, true)
+    return () => window.removeEventListener('keydown', handler, true)
+  }, [shellFullscreen, activeTerminalTabId])
 
   // xterm.js lifecycle: create instance on first activation, re-fit on subsequent activations
   useEffect(() => {
@@ -2455,9 +2496,40 @@ function App() {
     const resizeHandler = () => fitAddon.fit()
     window.addEventListener('resize', resizeHandler)
 
-    // Touch-to-focus: tapping the terminal on mobile opens the virtual keyboard
-    const touchHandler = () => term.focus()
-    container.addEventListener('touchstart', touchHandler, { passive: true })
+    // Touch scrolling: translate touch gestures into xterm scroll + tap-to-focus
+    let touchStartY = 0
+    let touchScrollActive = false
+    let accumulatedDelta = 0
+    const lineHeight = Math.ceil(term.options.fontSize! * 1.2)
+
+    const touchStartHandler = (e: TouchEvent) => {
+      if (e.touches.length === 1) {
+        touchStartY = e.touches[0].clientY
+        touchScrollActive = false
+        accumulatedDelta = 0
+      }
+    }
+    const touchMoveHandler = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return
+      const deltaY = touchStartY - e.touches[0].clientY
+      touchStartY = e.touches[0].clientY
+      if (!touchScrollActive && Math.abs(deltaY) > 2) touchScrollActive = true
+      if (touchScrollActive) {
+        e.preventDefault()
+        accumulatedDelta += deltaY
+        const lines = Math.trunc(accumulatedDelta / lineHeight)
+        if (lines !== 0) {
+          term.scrollLines(lines)
+          accumulatedDelta -= lines * lineHeight
+        }
+      }
+    }
+    const touchEndHandler = () => {
+      if (!touchScrollActive) term.focus() // tap-to-focus when not scrolling
+    }
+    container.addEventListener('touchstart', touchStartHandler, { passive: true })
+    container.addEventListener('touchmove', touchMoveHandler, { passive: false })
+    container.addEventListener('touchend', touchEndHandler, { passive: true })
 
     // Visual viewport resize: refit xterm when mobile keyboard opens/closes
     const viewportHandler = () => {
@@ -2465,7 +2537,7 @@ function App() {
     }
     window.visualViewport?.addEventListener('resize', viewportHandler)
 
-    xtermInstancesRef.current.set(tab.id, { term, fitAddon, webglAddon, onData, onResize, resizeHandler, viewportHandler, touchHandler, container })
+    xtermInstancesRef.current.set(tab.id, { term, fitAddon, webglAddon, onData, onResize, resizeHandler, viewportHandler, touchStartHandler, touchMoveHandler, touchEndHandler, container })
 
     // No cleanup on tab switch — instances persist until the tab is closed
   }, [activeTerminalTab?.id, activeTerminalTab?.type])
@@ -3065,6 +3137,7 @@ function App() {
 
   /** Switches between sub-tabs within the current section. */
   const handleSubTabChange = useCallback((tab: SubTab) => {
+    setShellFullscreen(false)
     setActiveSubTab(tab)
     navigate(buildPath(activeSection, tab))
   }, [activeSection, navigate])
@@ -3430,7 +3503,7 @@ function App() {
       {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
 
       {/* Main terminal */}
-      <div className="terminal">
+      <div className={`terminal ${shellFullscreen ? 'shell-fullscreen' : ''}`}>
         <div className="terminal-header">
           <div className="terminal-title">
             <button className="menu-button" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
@@ -3557,6 +3630,10 @@ function App() {
                 <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\x1b[B') }}>↓</button>
                 <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\x1b[D') }}>←</button>
                 <button onPointerDown={(e) => { e.preventDefault(); sendPtyKey('\x1b[C') }}>→</button>
+                <span className="shell-toolbar-divider" />
+                <button onPointerDown={(e) => { e.preventDefault(); toggleShellFullscreen() }} title={shellFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'}>
+                  {shellFullscreen ? 'Exit FS' : 'FS'}
+                </button>
               </div>
             </div>
           ) : (

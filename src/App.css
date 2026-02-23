@@ -699,6 +699,16 @@
   flex-shrink: 0;
 }
 
+/* Shell fullscreen mode — hides app chrome, terminal fills viewport */
+.terminal.shell-fullscreen .terminal-header,
+.terminal.shell-fullscreen .tab-bar {
+  display: none;
+}
+
+.terminal.shell-fullscreen .xterm-container {
+  padding: 0;
+}
+
 .terminal-output::after {
   content: '';
   display: block;
