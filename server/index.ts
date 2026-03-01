@@ -13,7 +13,7 @@ import { ClaudeCodeManager } from './claude-code.js';
 import { loadProjects, addProject, removeProject, updateProjectConversation, listProjectConversations, addConversationToProject, removeConversationFromProject, initProjectsDb, isValidGitHubUrl, parseGitHubRepoName } from './projects.js';
 import { initCrmDb, listContacts, createContact, updateContact, deleteContact, listInteractions, createInteraction, deleteInteraction } from './crm.js';
 import { initTodoDb, listTodos, createTodo, updateTodo, deleteTodo } from './todo.js';
-import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest, generateBriefingPreview, getLatestBriefing, listBriefings } from './daily-email.js';
+import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest, generateBriefingPreview, getLatestBriefing, listBriefings, isEmailSchedulerConfigured } from './daily-email.js';
 import { initRecitationsDb, listRecitations, createRecitation, updateRecitation, deleteRecitation } from './recitations.js';
 import { initResearchDb, listTopics, createTopic, updateTopic, deleteTopic, listArticles, deleteArticle, generateResearchArticles } from './research.js';
 import { initFeatureFlagsDb, listFeatureFlags, toggleFeatureFlag, isFlagEnabled } from './feature-flags.js';
@@ -21,7 +21,7 @@ import { initGoogleAuthDb, getGoogleAuthStatus, getGoogleAuthUrl, handleGoogleCa
 import { PtyManager } from './pty-manager.js';
 import { fetchUpcomingEvents, clearCalendarCache } from './google-calendar.js';
 import { getWeatherLocation, setWeatherLocation, geocodeLocation, fetchConfiguredWeather } from './weather.js';
-import { initNotificationsDb, listWatchedDocuments, addWatchedDocument, removeWatchedDocument, listNotifications, getUnreadCount, markAllRead, checkForChanges, startNotificationScheduler } from './google-drive-notifications.js';
+import { initNotificationsDb, listWatchedDocuments, addWatchedDocument, removeWatchedDocument, listNotifications, getUnreadCount, markAllRead, checkForChanges, startNotificationScheduler, getLastCheckTime } from './google-drive-notifications.js';
 import { initDb } from './db.js';
 import { logToFile, initLogger } from './file-logger.js';
 import { metricsMiddleware, metricsHandler, clientMetricsHandler, wsConnectionsActive, wsMessagesTotal, claudeCommandDuration, claudeCommandsTotal, claudeSessionsActive } from './telemetry.js';
@@ -1130,6 +1130,35 @@ app.put('/feature-flags/:key', (req, res) => {
     console.error('Error toggling feature flag:', error);
     const statusCode = error instanceof Error && error.message.includes('Unknown') ? 404 : 500;
     res.status(statusCode).json({ error: error instanceof Error ? error.message : 'Failed to toggle feature flag' });
+  }
+});
+
+// --- Cron Jobs Status Endpoint ---
+
+app.get('/cron-jobs', (_req, res) => {
+  try {
+    const latestBriefing = getLatestBriefing();
+    const lastDocCheck = getLastCheckTime();
+    const jobs = [
+      {
+        name: 'Daily Briefing Email',
+        schedule: '0 8 * * *',
+        description: 'Sends AI-generated daily briefing email',
+        enabled: isEmailSchedulerConfigured(),
+        lastRun: latestBriefing?.createdAt ?? null,
+      },
+      {
+        name: 'Google Drive Change Check',
+        schedule: '0 * * * *',
+        description: 'Checks watched Google Docs/Sheets for modifications',
+        enabled: true,
+        lastRun: lastDocCheck,
+      },
+    ];
+    res.json(jobs);
+  } catch (error) {
+    console.error('Error listing cron jobs:', error);
+    res.status(500).json({ error: 'Failed to list cron jobs' });
   }
 });
 

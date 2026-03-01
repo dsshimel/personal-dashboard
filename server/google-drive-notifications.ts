@@ -2,12 +2,13 @@
  * @fileoverview Google Drive document change notifications.
  *
  * Monitors Google Docs and Sheets for changes by polling the Drive API
- * for modifiedTime metadata. Checks once per day and creates notifications
- * when watched documents are modified.
+ * for modifiedTime metadata. Checks every hour via cron and creates
+ * notifications when watched documents are modified.
  */
 
 import { Database } from 'bun:sqlite';
 import { google } from 'googleapis';
+import cron, { type ScheduledTask } from 'node-cron';
 import { getDb } from './db.js';
 import { createOAuth2Client, loadTokens, saveTokens } from './google-contacts.js';
 
@@ -55,13 +56,11 @@ interface NotificationRow {
   read: number;
 }
 
-/** Interval handle for the scheduler. */
-let schedulerInterval: ReturnType<typeof setInterval> | null = null;
+/** Cron task handle for the scheduler. */
+let schedulerTask: ScheduledTask | null = null;
 
 /** Guard against concurrent checkForChanges calls. */
 let checkInProgress = false;
-
-const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
  * Initializes the notification tables in the database.
@@ -348,30 +347,40 @@ async function doCheckForChanges(): Promise<number> {
 
 /**
  * Starts the notification scheduler.
- * Checks on startup if the last check was >24h ago, then sets a 24h interval.
+ * Checks on startup if the last check was >1h ago, then runs hourly via cron.
  */
 export function startNotificationScheduler(): void {
-  if (schedulerInterval) return;
+  if (schedulerTask) return;
 
   const db = getDb();
   const meta = db.prepare("SELECT value FROM notification_meta WHERE key = 'last_check'").get() as { value: string } | null;
   const lastCheck = meta ? new Date(meta.value).getTime() : 0;
   const elapsed = Date.now() - lastCheck;
 
-  if (elapsed >= CHECK_INTERVAL_MS) {
+  if (elapsed >= 60 * 60 * 1000) {
     // Check immediately (async, fire-and-forget)
     checkForChanges().catch(err => console.error('Scheduled document check failed:', err));
   }
 
-  schedulerInterval = setInterval(() => {
+  // Run at the top of every hour
+  schedulerTask = cron.schedule('0 * * * *', () => {
     checkForChanges().catch(err => console.error('Scheduled document check failed:', err));
-  }, CHECK_INTERVAL_MS);
+  });
+
+  console.log('Document change notification scheduler started (hourly)');
+}
+
+/** Returns the ISO timestamp of the last document change check, or null if never checked. */
+export function getLastCheckTime(): string | null {
+  const db = getDb();
+  const meta = db.prepare("SELECT value FROM notification_meta WHERE key = 'last_check'").get() as { value: string } | null;
+  return meta?.value ?? null;
 }
 
 /** Stops the notification scheduler (for testing). */
 export function stopNotificationScheduler(): void {
-  if (schedulerInterval) {
-    clearInterval(schedulerInterval);
-    schedulerInterval = null;
+  if (schedulerTask) {
+    schedulerTask.stop();
+    schedulerTask = null;
   }
 }

@@ -194,7 +194,7 @@ interface StoredTerminalTab {
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'processing' | 'restarting'
 
 /** Currently active UI tab. */
-type Section = 'auth' | 'briefing' | 'crm' | 'diagnostics' | 'feature-flags' | 'hardware' | 'notifications' | 'recitations' | 'research' | 'terminal' | 'todo'
+type Section = 'auth' | 'briefing' | 'configuration' | 'crm' | 'diagnostics' | 'hardware' | 'notifications' | 'recitations' | 'research' | 'terminal' | 'todo'
 type TerminalTab = 'terminal' | 'projects' | 'conversations'
 type AuthTab = 'auth-status'
 type HardwareTab = 'webcams'
@@ -204,9 +204,9 @@ type TodoTab = 'todos'
 type BriefingTab = 'briefing-editor' | 'briefing-calendar'
 type RecitationsTab = 'recitations-editor'
 type ResearchTab = 'topics'
-type FeatureFlagsTab = 'flags'
+type ConfigurationTab = 'flags' | 'cron-jobs'
 type NotificationsTab = 'notification-feed' | 'watched-docs'
-type SubTab = TerminalTab | AuthTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab | RecitationsTab | ResearchTab | FeatureFlagsTab | NotificationsTab
+type SubTab = TerminalTab | AuthTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab | RecitationsTab | ResearchTab | ConfigurationTab | NotificationsTab
 
 // Keep alphabetized by section key
 const SECTION_TABS: Record<Section, SubTab[]> = {
@@ -214,7 +214,7 @@ const SECTION_TABS: Record<Section, SubTab[]> = {
   briefing: ['briefing-editor', 'briefing-calendar'],
   crm: ['contacts', 'google-contacts'],
   diagnostics: ['logs', 'client-perf', 'server-perf'],
-  'feature-flags': ['flags'],
+  configuration: ['flags', 'cron-jobs'],
   hardware: ['webcams'],
   notifications: ['notification-feed', 'watched-docs'],
   recitations: ['recitations-editor'],
@@ -230,7 +230,8 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
   contacts: 'Contacts',
   'google-contacts': 'Google Contacts',
   conversations: 'Conversations',
-  flags: 'Flags',
+  'cron-jobs': 'Cron Jobs',
+  flags: 'Feature Flags',
   'notification-feed': 'Feed',
   'briefing-calendar': 'Calendar',
   'briefing-editor': 'Prompt Editor',
@@ -248,11 +249,11 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
 // Keep sidebar sections alphabetized by display label
 const SECTION_LABELS: Record<Section, string> = {
   auth: '🔐 Auth',
+  configuration: '⚙️ Configuration',
   briefing: '☀️ Daily Briefing',
-  diagnostics: '🩺 Diagnostics',
-  'feature-flags': '🚩 Feature Flags',
   crm: '👥 Friend CRM',
   hardware: '🖥️ Hardware',
+  diagnostics: '📡 Monitoring',
   notifications: '🔔 Notifications',
   recitations: '📖 Recitations',
   research: '🔬 Research',
@@ -271,6 +272,7 @@ const SUBTAB_TO_SLUG: Record<SubTab, string> = {
   'client-perf': 'client-perf',
   contacts: 'contacts',
   conversations: 'conversations',
+  'cron-jobs': 'cron-jobs',
   flags: 'flags',
   'google-contacts': 'google-contacts',
   logs: 'logs',
@@ -330,6 +332,15 @@ interface FeatureFlag {
   label: string
   description: string
   enabled: boolean
+}
+
+/** Represents a scheduled cron job. */
+interface CronJob {
+  name: string
+  schedule: string
+  description: string
+  enabled: boolean
+  lastRun: string | null
 }
 
 /** Represents a CRM contact. */
@@ -515,7 +526,7 @@ function App() {
     authorizedEmail: string | null, connectedEmail: string | null,
   } | null>(null)
   const shellAuthorized = shellAuthStatus?.authorized ?? false
-  const xtermInstancesRef = useRef<Map<string, { term: XTerm, fitAddon: FitAddon, webglAddon: WebglAddon | null, onData: { dispose(): void }, onResize: { dispose(): void }, resizeHandler: () => void, viewportHandler: () => void, touchStartHandler: (e: TouchEvent) => void, touchMoveHandler: (e: TouchEvent) => void, touchEndHandler: (e: TouchEvent) => void, container: HTMLDivElement }>>(new Map())
+  const xtermInstancesRef = useRef<Map<string, { term: XTerm, fitAddon: FitAddon, webglAddon: WebglAddon | null, onData: { dispose(): void }, onResize: { dispose(): void }, resizeHandler: () => void, viewportHandler: () => void, touchStartHandler: (e: TouchEvent) => void, touchMoveHandler: (e: TouchEvent) => void, touchEndHandler: (e: TouchEvent) => void, textarea: HTMLTextAreaElement | null, mobileInputHandler: (e: Event) => void, container: HTMLDivElement }>>(new Map())
   const xtermContainerRefs = useRef<Map<string, HTMLDivElement>>(new Map())
 
   // CRM state
@@ -534,7 +545,7 @@ function App() {
   const [newInteractionDate, setNewInteractionDate] = useState(() => new Date().toISOString().split('T')[0])
 
   // Google Contacts state
-  const [googleAuthStatus, setGoogleAuthStatus] = useState<{ configured: boolean; authenticated: boolean }>({ configured: false, authenticated: false })
+  const [googleAuthStatus, setGoogleAuthStatus] = useState<{ configured: boolean; authenticated: boolean; scopes: string[] }>({ configured: false, authenticated: false, scopes: [] })
   const [googleContacts, setGoogleContacts] = useState<GoogleContact[]>([])
   const [googleContactsSearch, setGoogleContactsSearch] = useState('')
   const [loadingGoogleContacts, setLoadingGoogleContacts] = useState(false)
@@ -560,6 +571,10 @@ function App() {
   // Feature flags state
   const [featureFlags, setFeatureFlags] = useState<FeatureFlag[]>([])
   const [loadingFlags, setLoadingFlags] = useState(false)
+
+  // Cron jobs state
+  const [cronJobs, setCronJobs] = useState<CronJob[]>([])
+  const [loadingCronJobs, setLoadingCronJobs] = useState(false)
 
   // Todo state
   const [todos, setTodos] = useState<TodoItem[]>([])
@@ -1241,6 +1256,25 @@ function App() {
       console.error('Failed to toggle feature flag:', error)
     }
   }, [fetchFeatureFlags])
+
+  // --- Cron jobs data fetching ---
+
+  /** Fetches cron job status from the API. */
+  const fetchCronJobs = useCallback(async () => {
+    setLoadingCronJobs(true)
+    try {
+      const apiUrl = `http://${window.location.hostname}:4001/cron-jobs`
+      const response = await fetch(apiUrl)
+      if (response.ok) {
+        const data = await response.json()
+        setCronJobs(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch cron jobs:', error)
+    } finally {
+      setLoadingCronJobs(false)
+    }
+  }, [])
 
   // --- Notifications data fetching ---
 
@@ -2036,7 +2070,7 @@ function App() {
     try {
       const res = await fetch(`http://${window.location.hostname}:4001/google/auth/disconnect`, { method: 'POST' })
       if (res.ok) {
-        setGoogleAuthStatus({ configured: true, authenticated: false })
+        setGoogleAuthStatus(prev => ({ ...prev, configured: true, authenticated: false }))
         setGoogleContacts([])
         setRandomGoogleContacts([])
         setCalendarEvents([])
@@ -2208,6 +2242,7 @@ function App() {
       instance.container.removeEventListener('touchstart', instance.touchStartHandler)
       instance.container.removeEventListener('touchmove', instance.touchMoveHandler)
       instance.container.removeEventListener('touchend', instance.touchEndHandler)
+      instance.textarea?.removeEventListener('input', instance.mobileInputHandler)
       instance.onData.dispose()
       instance.onResize.dispose()
       instance.webglAddon?.dispose()
@@ -2463,6 +2498,11 @@ function App() {
       }
     })
 
+    // Track whether xterm handled a backspace via keydown, to avoid double-sending on mobile.
+    // On Android, preventDefault() on keydown doesn't always suppress the subsequent input event,
+    // so we use this flag to check in the input handler below.
+    let xtermHandledBackspace = false
+
     // Clipboard handling: Ctrl+Shift+C to copy, Ctrl+Shift+V to paste
     term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
       if (event.ctrlKey && event.shiftKey && event.key === 'C' && event.type === 'keydown') {
@@ -2481,8 +2521,35 @@ function App() {
         }).catch(() => {})
         return false
       }
+      // Mark that xterm is about to handle a backspace via keydown (desktop path)
+      if (event.key === 'Backspace' && event.type === 'keydown') {
+        xtermHandledBackspace = true
+      }
       return true
     })
+
+    // Mobile backspace fix: on Android, some keyboards use the input event for backspace
+    // instead of a proper keydown, so we intercept the textarea's input event.
+    const textarea = container.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea')
+    const mobileInputHandler = (e: Event) => {
+      const ie = e as InputEvent
+      if (ie.inputType === 'deleteContentBackward') {
+        if (xtermHandledBackspace) {
+          // xterm already sent \x7f via keydown — don't double-send
+          xtermHandledBackspace = false
+        } else {
+          // Mobile keyboard sent backspace via input event only — send \x7f manually
+          const ws = wsRef.current
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'pty-input', tabId: tab.id, data: '\x7f' }))
+          }
+        }
+      } else {
+        // Reset flag for any other input type (just in case of ordering edge cases)
+        xtermHandledBackspace = false
+      }
+    }
+    textarea?.addEventListener('input', mobileInputHandler)
 
     // Handle resize
     const onResize = term.onResize(({ cols, rows }) => {
@@ -2537,7 +2604,7 @@ function App() {
     }
     window.visualViewport?.addEventListener('resize', viewportHandler)
 
-    xtermInstancesRef.current.set(tab.id, { term, fitAddon, webglAddon, onData, onResize, resizeHandler, viewportHandler, touchStartHandler, touchMoveHandler, touchEndHandler, container })
+    xtermInstancesRef.current.set(tab.id, { term, fitAddon, webglAddon, onData, onResize, resizeHandler, viewportHandler, touchStartHandler, touchMoveHandler, touchEndHandler, textarea: textarea ?? null, mobileInputHandler, container })
 
     // No cleanup on tab switch — instances persist until the tab is closed
   }, [activeTerminalTab?.id, activeTerminalTab?.type])
@@ -2648,6 +2715,13 @@ function App() {
       fetchFeatureFlags()
     }
   }, [activeSubTab, fetchFeatureFlags])
+
+  // Fetch cron jobs when cron-jobs tab is active
+  useEffect(() => {
+    if (activeSubTab === 'cron-jobs') {
+      fetchCronJobs()
+    }
+  }, [activeSubTab, fetchCronJobs])
 
   // Fetch unread notification count on mount and periodically
   useEffect(() => {
@@ -4342,6 +4416,30 @@ function App() {
                         <span className="auth-detail-value">{shellAuthStatus.connectedEmail}</span>
                       </div>
                     )}
+                    {googleAuthStatus.scopes.length > 0 && (
+                      <div className="auth-card-detail auth-card-detail-scopes">
+                        <span className="auth-detail-label">Granted scopes</span>
+                        <ul className="auth-scopes-list">
+                          {googleAuthStatus.scopes.map(scope => {
+                            const label: Record<string, string> = {
+                              'https://www.googleapis.com/auth/contacts.readonly': 'Contacts (read-only)',
+                              'https://www.googleapis.com/auth/calendar.events.readonly': 'Calendar Events (read-only)',
+                              'https://www.googleapis.com/auth/userinfo.email': 'Email Address',
+                              'https://www.googleapis.com/auth/drive.metadata.readonly': 'Drive Metadata (read-only)',
+                              'https://www.googleapis.com/auth/drive': 'Google Drive (read/write)',
+                              'https://www.googleapis.com/auth/drive.readonly': 'Google Drive (read-only)',
+                              'https://www.googleapis.com/auth/spreadsheets.readonly': 'Google Sheets (read-only)',
+                              'https://www.googleapis.com/auth/spreadsheets': 'Google Sheets (read/write)',
+                              'https://www.googleapis.com/auth/documents.readonly': 'Google Docs (read-only)',
+                              'https://www.googleapis.com/auth/documents': 'Google Docs (read/write)',
+                              'https://www.googleapis.com/auth/presentations': 'Google Slides (read/write)',
+                              'https://www.googleapis.com/auth/presentations.readonly': 'Google Slides (read-only)',
+                            };
+                            return <li key={scope}>{label[scope] ?? scope}</li>;
+                          })}
+                        </ul>
+                      </div>
+                    )}
                     <button
                       className="auth-action-button auth-disconnect-button"
                       onClick={async () => { await handleGoogleDisconnect(); fetchShellAuthStatus() }}
@@ -4432,6 +4530,39 @@ function App() {
                   <div className="feature-flag-info">
                     <span className="feature-flag-label">{flag.label}</span>
                     <span className="feature-flag-description">{flag.description}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Cron Jobs - always mounted, hidden when inactive */}
+        <div className={`cron-jobs-container ${activeSubTab !== 'cron-jobs' ? 'tab-hidden' : ''}`}>
+          {loadingCronJobs && cronJobs.length === 0 && (
+            <div className="welcome-message">Loading cron jobs...</div>
+          )}
+
+          {!loadingCronJobs && cronJobs.length === 0 && (
+            <div className="welcome-message">No cron jobs configured.</div>
+          )}
+
+          {cronJobs.length > 0 && (
+            <div className="cron-jobs-list">
+              {cronJobs.map(job => (
+                <div key={job.name} className="cron-job-item">
+                  <div className="cron-job-header">
+                    <span className={`cron-job-status ${job.enabled ? 'cron-job-enabled' : 'cron-job-disabled'}`}>
+                      {job.enabled ? 'Active' : 'Inactive'}
+                    </span>
+                    <span className="cron-job-name">{job.name}</span>
+                  </div>
+                  <div className="cron-job-description">{job.description}</div>
+                  <div className="cron-job-details">
+                    <span className="cron-job-schedule">Schedule: <code>{job.schedule}</code></span>
+                    <span className="cron-job-last-run">
+                      Last run: {job.lastRun ? new Date(job.lastRun).toLocaleString() : 'Never'}
+                    </span>
                   </div>
                 </div>
               ))}

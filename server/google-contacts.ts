@@ -46,13 +46,25 @@ export function initGoogleAuthDb(db: Database): void {
   `);
 }
 
+/** OAuth2 scopes requested during Google authorization. */
+export const GOOGLE_OAUTH_SCOPES = [
+  'https://www.googleapis.com/auth/contacts.readonly',
+  'https://www.googleapis.com/auth/calendar.events.readonly',
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/drive.metadata.readonly',
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/documents',
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/presentations',
+];
+
 /**
  * Returns whether Google API credentials are configured and whether the user is authenticated.
  */
-export function getGoogleAuthStatus(): { configured: boolean; authenticated: boolean } {
+export function getGoogleAuthStatus(): { configured: boolean; authenticated: boolean; scopes: string[] } {
   const configured = !!(process.env.GOOGLE_PEOPLE_API_CLIENT_ID && process.env.GOOGLE_PEOPLE_API_CLIENT_SECRET);
   const authenticated = configured && isAuthenticated();
-  return { configured, authenticated };
+  return { configured, authenticated, scopes: GOOGLE_OAUTH_SCOPES };
 }
 
 /**
@@ -81,12 +93,7 @@ export function getGoogleAuthUrl(redirectUri?: string): string | null {
   return client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
-    scope: [
-      'https://www.googleapis.com/auth/contacts.readonly',
-      'https://www.googleapis.com/auth/calendar.events.readonly',
-      'https://www.googleapis.com/auth/userinfo.email',
-      'https://www.googleapis.com/auth/drive.metadata.readonly',
-    ],
+    scope: GOOGLE_OAUTH_SCOPES,
   });
 }
 

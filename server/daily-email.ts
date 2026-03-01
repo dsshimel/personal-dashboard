@@ -425,6 +425,11 @@ export async function sendDailyDigest(): Promise<void> {
   }
 }
 
+/** Returns whether the daily email scheduler is configured (env vars present). */
+export function isEmailSchedulerConfigured(): boolean {
+  return getEmailConfig() !== null;
+}
+
 /**
  * Starts the daily email cron job. Call once at server startup.
  * No-op if environment variables are not configured.

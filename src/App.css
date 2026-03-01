@@ -184,6 +184,25 @@
   color: #9ca3af;
 }
 
+.auth-card-detail-scopes {
+  align-items: flex-start;
+}
+
+.auth-scopes-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.auth-scopes-list li {
+  color: #d1d5db;
+  font-size: 0.85rem;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+}
+
 .auth-card-hint {
   color: #6b7280;
   font-size: 0.8rem;
@@ -3120,6 +3139,88 @@
 
 .feature-flag-toggle input:checked + .feature-flag-slider::before {
   transform: translateX(18px);
+}
+
+/* Cron Jobs */
+.cron-jobs-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  gap: 12px;
+}
+
+.cron-jobs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cron-job-item {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px;
+  background: #16213e;
+  border: 1px solid #2a3f5f;
+  border-radius: 6px;
+  gap: 6px;
+}
+
+.cron-job-item:hover {
+  border-color: #3a5f8f;
+}
+
+.cron-job-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cron-job-status {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.cron-job-enabled {
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+}
+
+.cron-job-disabled {
+  background: rgba(136, 136, 136, 0.15);
+  color: #888;
+}
+
+.cron-job-name {
+  color: #e0e0e0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.cron-job-description {
+  color: #888;
+  font-size: 12px;
+}
+
+.cron-job-details {
+  display: flex;
+  gap: 16px;
+  font-size: 12px;
+  color: #999;
+  margin-top: 2px;
+}
+
+.cron-job-details code {
+  background: #1a2744;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #8bb4e0;
 }
 
 /* Notifications */
