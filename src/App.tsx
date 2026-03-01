@@ -203,7 +203,7 @@ type CrmTab = 'contacts' | 'google-contacts'
 type TodoTab = 'todos'
 type BriefingTab = 'briefing-editor' | 'briefing-calendar'
 type RecitationsTab = 'recitations-editor'
-type ResearchTab = 'topics'
+type ResearchTab = 'topics' | 'notebook'
 type ConfigurationTab = 'flags' | 'cron-jobs'
 type NotificationsTab = 'notification-feed' | 'watched-docs'
 type SubTab = TerminalTab | AuthTab | HardwareTab | DiagnosticsTab | CrmTab | TodoTab | BriefingTab | RecitationsTab | ResearchTab | ConfigurationTab | NotificationsTab
@@ -218,7 +218,7 @@ const SECTION_TABS: Record<Section, SubTab[]> = {
   hardware: ['webcams'],
   notifications: ['notification-feed', 'watched-docs'],
   recitations: ['recitations-editor'],
-  research: ['topics'],
+  research: ['topics', 'notebook'],
   terminal: ['terminal', 'projects', 'conversations'],
   todo: ['todos'],
 }
@@ -238,6 +238,7 @@ const SUB_TAB_LABELS: Record<SubTab, string> = {
   projects: 'Projects',
   'recitations-editor': 'Recitations',
   'server-perf': 'Server Performance',
+  notebook: 'Notebook',
   topics: 'Topics',
   logs: 'Server Logs',
   'watched-docs': 'Watched Docs',
@@ -282,6 +283,7 @@ const SUBTAB_TO_SLUG: Record<SubTab, string> = {
   'server-perf': 'server-perf',
   terminal: 'terminal',
   todos: 'todos',
+  notebook: 'notebook',
   topics: 'topics',
   'watched-docs': 'watched-docs',
   webcams: 'webcams',
@@ -425,6 +427,15 @@ interface RecitationItem {
   content: string | null
   done: boolean
   createdAt: string
+}
+
+/** A notebook note. */
+interface NotebookNote {
+  id: string
+  title: string
+  body: string
+  createdAt: string
+  updatedAt: string
 }
 
 /** A research topic. */
@@ -595,6 +606,15 @@ function App() {
   const [editRecitationContent, setEditRecitationContent] = useState('')
   const [loadingRecitations, setLoadingRecitations] = useState(false)
   const [showArchivedRecitations, setShowArchivedRecitations] = useState(false)
+
+  // Notebook state
+  const [notes, setNotes] = useState<NotebookNote[]>([])
+  const [newNoteTitle, setNewNoteTitle] = useState('')
+  const [newNoteBody, setNewNoteBody] = useState('')
+  const [editingNote, setEditingNote] = useState<NotebookNote | null>(null)
+  const [editNoteTitle, setEditNoteTitle] = useState('')
+  const [editNoteBody, setEditNoteBody] = useState('')
+  const [loadingNotes, setLoadingNotes] = useState(false)
 
   // Research state
   const [topics, setTopics] = useState<ResearchTopic[]>([])
@@ -1595,6 +1615,84 @@ function App() {
       console.error('Failed to toggle recitation done:', error)
     }
   }, [fetchRecitations])
+
+  // --- Notebook callbacks ---
+
+  const fetchNotes = useCallback(async () => {
+    setLoadingNotes(true)
+    try {
+      const response = await fetch(`http://${window.location.hostname}:4001/notebook/notes`)
+      if (response.ok) {
+        const data = await response.json()
+        setNotes(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch notes:', error)
+    } finally {
+      setLoadingNotes(false)
+    }
+  }, [])
+
+  const handleCreateNote = useCallback(async () => {
+    if (!newNoteTitle.trim()) return
+    try {
+      const response = await fetch(`http://${window.location.hostname}:4001/notebook/notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newNoteTitle.trim(), body: newNoteBody.trim() }),
+      })
+      if (response.ok) {
+        setNewNoteTitle('')
+        setNewNoteBody('')
+        await fetchNotes()
+      }
+    } catch (error) {
+      console.error('Failed to create note:', error)
+    }
+  }, [newNoteTitle, newNoteBody, fetchNotes])
+
+  const handleUpdateNote = useCallback(async () => {
+    if (!editingNote || !editNoteTitle.trim()) return
+    try {
+      const response = await fetch(`http://${window.location.hostname}:4001/notebook/notes/${editingNote.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: editNoteTitle.trim(), body: editNoteBody.trim() }),
+      })
+      if (response.ok) {
+        setEditingNote(null)
+        setEditNoteTitle('')
+        setEditNoteBody('')
+        await fetchNotes()
+      }
+    } catch (error) {
+      console.error('Failed to update note:', error)
+    }
+  }, [editingNote, editNoteTitle, editNoteBody, fetchNotes])
+
+  const handleDeleteNote = useCallback(async (id: string) => {
+    try {
+      const response = await fetch(`http://${window.location.hostname}:4001/notebook/notes/${id}`, { method: 'DELETE' })
+      if (response.ok) {
+        if (editingNote?.id === id) setEditingNote(null)
+        await fetchNotes()
+      }
+    } catch (error) {
+      console.error('Failed to delete note:', error)
+    }
+  }, [editingNote, fetchNotes])
+
+  const handleStartEditNote = useCallback((note: NotebookNote) => {
+    setEditingNote(note)
+    setEditNoteTitle(note.title)
+    setEditNoteBody(note.body)
+  }, [])
+
+  const handleCancelEditNote = useCallback(() => {
+    setEditingNote(null)
+    setEditNoteTitle('')
+    setEditNoteBody('')
+  }, [])
 
   // --- Research data fetching ---
 
@@ -2764,6 +2862,13 @@ function App() {
       fetchTopics()
     }
   }, [activeSubTab, fetchTopics])
+
+  // Fetch notes when notebook tab is active
+  useEffect(() => {
+    if (activeSubTab === 'notebook') {
+      fetchNotes()
+    }
+  }, [activeSubTab, fetchNotes])
 
   // Fetch contacts when CRM tab is active
   useEffect(() => {
@@ -5139,6 +5244,106 @@ function App() {
                           ))}
                         </div>
                       )}
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Notebook - always mounted, hidden when inactive */}
+        <div className={`recitations-container ${activeSubTab !== 'notebook' ? 'tab-hidden' : ''}`}>
+          <div className="recitations-add-form">
+            <input
+              className="recitations-input"
+              type="text"
+              placeholder="Note title..."
+              value={newNoteTitle}
+              onChange={e => setNewNoteTitle(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleCreateNote()}
+            />
+            <textarea
+              className="recitations-textarea"
+              placeholder="Note body..."
+              value={newNoteBody}
+              onChange={e => setNewNoteBody(e.target.value)}
+              rows={4}
+            />
+            <button
+              className="recitations-add-button"
+              onClick={handleCreateNote}
+              disabled={!newNoteTitle.trim()}
+            >
+              Add Note
+            </button>
+          </div>
+
+          {loadingNotes && notes.length === 0 && (
+            <div className="welcome-message">Loading notes...</div>
+          )}
+
+          {!loadingNotes && notes.length === 0 && (
+            <div className="welcome-message">No notes yet. Add one above.</div>
+          )}
+
+          {notes.length > 0 && (
+            <div className="recitations-list">
+              {notes.map(note => (
+                <div key={note.id} className="recitation-item">
+                  {editingNote?.id === note.id ? (
+                    <div className="recitation-edit-form">
+                      <input
+                        className="recitations-input"
+                        type="text"
+                        value={editNoteTitle}
+                        onChange={e => setEditNoteTitle(e.target.value)}
+                        onKeyDown={e => e.key === 'Enter' && !e.shiftKey && handleUpdateNote()}
+                      />
+                      <textarea
+                        className="recitations-textarea"
+                        value={editNoteBody}
+                        onChange={e => setEditNoteBody(e.target.value)}
+                        rows={6}
+                      />
+                      <div className="recitation-edit-actions">
+                        <button className="recitations-save-button" onClick={handleUpdateNote} disabled={!editNoteTitle.trim()}>
+                          Save
+                        </button>
+                        <button className="recitations-cancel-button" onClick={handleCancelEditNote}>
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="recitation-item-header">
+                        <span className="recitation-title">{note.title}</span>
+                        <span className="recitation-date">{formatDate(note.updatedAt)}</span>
+                      </div>
+                      {note.body && (
+                        <div className="recitation-content" style={{ whiteSpace: 'pre-wrap' }}>{note.body}</div>
+                      )}
+                      <div style={{ fontSize: '11px', color: '#666', marginTop: '4px' }}>
+                        Created {formatDate(note.createdAt)}
+                        {note.updatedAt !== note.createdAt && <> · Updated {formatDate(note.updatedAt)}</>}
+                      </div>
+                      <div className="recitation-actions">
+                        <button
+                          className="recitation-edit-button"
+                          onClick={() => handleStartEditNote(note)}
+                          title="Edit note"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          className="recitation-delete-button"
+                          onClick={() => handleDeleteNote(note.id)}
+                          title="Delete note"
+                        >
+                          &times;
+                        </button>
+                      </div>
                     </>
                   )}
                 </div>

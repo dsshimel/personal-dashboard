@@ -16,6 +16,7 @@ import { initTodoDb, listTodos, createTodo, updateTodo, deleteTodo } from './tod
 import { initDailyEmailDb, startDailyEmailScheduler, getBriefingPrompt, setBriefingPrompt, sendDailyDigest, generateBriefingPreview, getLatestBriefing, listBriefings, isEmailSchedulerConfigured } from './daily-email.js';
 import { initRecitationsDb, listRecitations, createRecitation, updateRecitation, deleteRecitation } from './recitations.js';
 import { initResearchDb, listTopics, createTopic, updateTopic, deleteTopic, listArticles, deleteArticle, generateResearchArticles } from './research.js';
+import { initNotebookDb, listNotes, createNote, updateNote, deleteNote } from './notebook.js';
 import { initFeatureFlagsDb, listFeatureFlags, toggleFeatureFlag, isFlagEnabled } from './feature-flags.js';
 import { initGoogleAuthDb, getGoogleAuthStatus, getGoogleAuthUrl, handleGoogleCallback, clearTokens as clearGoogleTokens, fetchGoogleContacts, getRandomGoogleContacts, isShellAuthorized, getAuthenticatedEmail } from './google-contacts.js';
 import { PtyManager } from './pty-manager.js';
@@ -40,6 +41,7 @@ initTodoDb(db);
 initDailyEmailDb(db);
 initRecitationsDb(db);
 initResearchDb(db);
+initNotebookDb(db);
 initFeatureFlagsDb(db);
 initGoogleAuthDb(db);
 initNotificationsDb(db);
@@ -1101,6 +1103,57 @@ app.post('/research/generate', async (_req, res) => {
   } catch (error) {
     console.error('Error generating research:', error);
     res.status(500).json({ error: 'Failed to generate research' });
+  }
+});
+
+// --- Notebook Endpoints ---
+
+app.get('/notebook/notes', (_req, res) => {
+  try {
+    const notes = listNotes();
+    res.json(notes);
+  } catch (error) {
+    console.error('Error listing notes:', error);
+    res.status(500).json({ error: 'Failed to list notes' });
+  }
+});
+
+app.post('/notebook/notes', (req, res) => {
+  try {
+    const { title, body } = req.body;
+    if (!title) {
+      res.status(400).json({ error: 'title is required' });
+      return;
+    }
+    const note = createNote({ title, body });
+    console.log(`Note created: ${note.id} (${note.title})`);
+    res.json(note);
+  } catch (error) {
+    console.error('Error creating note:', error);
+    res.status(500).json({ error: 'Failed to create note' });
+  }
+});
+
+app.put('/notebook/notes/:id', (req, res) => {
+  try {
+    const { title, body } = req.body;
+    const note = updateNote(req.params.id, { title, body });
+    console.log(`Note updated: ${note.id} (${note.title})`);
+    res.json(note);
+  } catch (error) {
+    console.error('Error updating note:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to update note' });
+  }
+});
+
+app.delete('/notebook/notes/:id', (req, res) => {
+  try {
+    deleteNote(req.params.id);
+    console.log(`Note deleted: ${req.params.id}`);
+    res.json({ status: 'ok' });
+  } catch (error) {
+    console.error('Error deleting note:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Failed to delete note' });
   }
 });
 
